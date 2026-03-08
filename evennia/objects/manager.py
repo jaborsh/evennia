@@ -728,6 +728,7 @@ class ObjectDBManager(TypedObjectManager):
             attributes=attributes,
             nattributes=nattributes,
         )
+
         # this will trigger the save signal which in turn calls the
         # at_first_save hook on the typeclass, where the _createdict can be
         # used.

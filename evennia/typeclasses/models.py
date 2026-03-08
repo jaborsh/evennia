@@ -60,7 +60,7 @@ from evennia.typeclasses.tags import (
 )
 from evennia.utils.idmapper.models import SharedMemoryModel, SharedMemoryModelBase
 from evennia.utils.logger import log_trace
-from evennia.utils.utils import class_from_module, inherits_from, is_iter, lazy_property
+from evennia.utils.utils import class_from_module, inherits_from, is_iter, lazy_property, make_iter
 
 __all__ = ("TypedObject",)
 
@@ -348,21 +348,157 @@ class TypedObject(SharedMemoryModel):
         Called by creation methods; makes sure to initialize Attribute/TagProperties
         by fetching them once.
         """
-        evennia_properties = set()
-        for base in type(self).__mro__:
-            evennia_properties.update(
-                {
+        cls = type(self)
+        if "_evennia_properties" not in cls.__dict__:
+            props = set()
+            for base in cls.__mro__:
+                props.update(
                     propkey
                     for propkey, prop in vars(base).items()
                     if isinstance(prop, (AttributeProperty, TagProperty, TagCategoryProperty))
-                }
-            )
+                )
+            cls._evennia_properties = frozenset(props)
 
-        for propkey in evennia_properties:
+        for propkey in cls._evennia_properties:
             try:
                 getattr(self, propkey)
             except Exception:
                 log_trace()
+
+    # --- Creation configuration (override in subclasses) ---
+    _creation_hook_name = None          # "at_object_creation", "at_script_creation", etc.
+    _post_creation_hook_name = None     # "at_object_post_creation", etc.
+    _createdict_field_map = ()          # ((cdict_key, db_field), ...) or ((cdict_key, db_field, transform), ...)
+
+    def _process_first_save(self):
+        """Unified first-save orchestrator."""
+        self.locks._defer_save = True
+        self.basetype_setup()
+
+        if self._creation_hook_name:
+            getattr(self, self._creation_hook_name)()
+        self.init_evennia_properties()
+
+        if hasattr(self, "_createdict"):
+            self._apply_createdict()
+        else:
+            self.save(update_fields=["db_lock_storage"])
+
+        self.locks._defer_save = False
+
+        if self._post_creation_hook_name:
+            getattr(self, self._post_creation_hook_name)()
+
+    def _apply_createdict(self):
+        """Process _createdict: fields, locks, tags, attributes."""
+        cdict = self._createdict
+
+        # Mark caches complete (brand-new object)
+        self.tags._cache_complete = True
+        self.aliases._cache_complete = True
+        self.permissions._cache_complete = True
+        self.attributes._cache_complete = True
+
+        # Pre-process hook (e.g., accounts inject default permissions)
+        self._pre_process_createdict(cdict)
+
+        updates = []
+
+        # Key handling
+        if not cdict.get("key"):
+            if not self.db_key:
+                self.db_key = self._default_key()
+                updates.append("db_key")
+        elif self.db_key != cdict["key"]:
+            self.db_key = cdict["key"]
+            updates.append("db_key")
+
+        # Type-specific fields from field map
+        for entry in self._createdict_field_map:
+            cdict_key, db_field = entry[0], entry[1]
+            transform = entry[2] if len(entry) > 2 else None
+            if cdict.get(cdict_key):
+                new_val = cdict[cdict_key]
+                if transform:
+                    new_val = transform(new_val)
+                if getattr(self, db_field) != new_val:
+                    setattr(self, db_field, new_val)
+                    updates.append(db_field)
+
+        # Lock merging (always)
+        if cdict.get("locks"):
+            lockstring = cdict["locks"]
+            if not isinstance(lockstring, str):
+                lockstring = ";".join(lockstring)
+            storage = self.lock_storage
+            if storage:
+                storage = storage + ";" + lockstring
+            else:
+                storage = lockstring
+            self.locks._cache_locks(storage)
+            object.__setattr__(
+                self,
+                "db_lock_storage",
+                ";".join(tup[2] for tup in self.locks.locks.values()),
+            )
+        updates.append("db_lock_storage")
+
+        if updates:
+            self.save(update_fields=updates)
+
+        # Batch-create tags (permissions, aliases, regular tags)
+        self._batch_create_tags_from_cdict(cdict)
+
+        # Type-specific post-field hooks
+        self._post_createdict_hooks(cdict)
+
+        # Attributes
+        if cdict.get("attributes"):
+            self.attributes.batch_add(*cdict["attributes"])
+        if cdict.get("nattributes"):
+            nattrs = cdict["nattributes"]
+            for key, value in (nattrs.items() if isinstance(nattrs, dict) else nattrs):
+                self.nattributes.add(key, value)
+
+        del self._createdict
+
+    def _batch_create_tags_from_cdict(self, cdict):
+        """Collect all tag specs from cdict and batch-create them."""
+        tag_specs = []
+        tag_handler_map = []
+
+        for source_key, tagtype, handler_attr in (
+            ("permissions", "permission", "permissions"),
+            ("aliases", "alias", "aliases"),
+            ("tags", None, "tags"),
+        ):
+            if not cdict.get(source_key):
+                continue
+            handler = getattr(self, handler_attr)
+            for tup in make_iter(cdict[source_key]):
+                tup = make_iter(tup)
+                nlen = len(tup)
+                key = str(tup[0]).strip().lower() if tup[0] else None
+                category = str(tup[1]).strip().lower() if nlen > 1 and tup[1] else None
+                data = str(tup[2]) if nlen > 2 and tup[2] is not None else None
+                if key:
+                    tag_specs.append((key, category, data, tagtype))
+                    tag_handler_map.append(handler)
+
+        if tag_specs:
+            tag_objs = self.__class__.objects.batch_create_tags(tag_specs)
+            for handler, tagobj in zip(tag_handler_map, tag_objs):
+                handler._setcache(tagobj.db_key, tagobj.db_category, tagobj)
+            self.db_tags.add(*tag_objs)
+
+    def _default_key(self):
+        return f"#{self.dbid}"
+
+    def _pre_process_createdict(self, cdict):
+        pass
+
+    def _post_createdict_hooks(self, cdict):
+        pass
 
     # initialize all handlers in a lazy fashion
     @lazy_property

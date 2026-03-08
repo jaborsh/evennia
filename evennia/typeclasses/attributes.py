@@ -566,6 +566,10 @@ class IAttributeBackend:
                 return [attr]  # return cached entity
             else:
                 return []  # no such attribute: return an empty list
+        elif self._cache_complete and _TYPECLASS_AGGRESSIVE_CACHE:
+            # Cache is complete — if key isn't found, it doesn't exist
+            self._cache[cachekey] = None  # negative cache
+            return []
         else:
             conn = self.query_key(key, category)
             if conn:
@@ -739,6 +743,7 @@ class IAttributeBackend:
             attr (IAttribute): The new Attribute.
         """
         attr = self.do_create_attribute(key, category, lockstring, value, strvalue)
+        self.do_batch_finish([attr])
         if cache:
             self._set_cache(key, category, attr)
         return attr
@@ -807,7 +812,9 @@ class IAttributeBackend:
 
         """
         new_attrobjs = []
+        new_attr_data = []
         strattr = kwargs.get("strattr", False)
+        use_bulk = hasattr(self, "do_batch_create_attributes")
         for tup in args:
             if not is_iter(tup) or len(tup) < 2:
                 raise RuntimeError("batch_add requires iterables as arguments (got %r)." % tup)
@@ -823,11 +830,15 @@ class IAttributeBackend:
                 attr_obj = attr_objs[0]
                 # update an existing attribute object
                 self.do_batch_update_attribute(attr_obj, category, lockstring, new_value, strattr)
+            elif use_bulk:
+                new_attr_data.append((keystr, category, lockstring, new_value, strattr))
             else:
                 new_attr = self.do_create_attribute(
                     keystr, category, lockstring, new_value, strvalue=strattr
                 )
                 new_attrobjs.append(new_attr)
+        if new_attr_data:
+            new_attrobjs.extend(self.do_batch_create_attributes(new_attr_data))
         if new_attrobjs:
             self.do_batch_finish(new_attrobjs)
 
@@ -1078,7 +1089,6 @@ class ModelAttributeBackend(IAttributeBackend):
             kwargs["db_strvalue"] = None
         new_attr = self._attrclass(**kwargs)
         new_attr.save()
-        getattr(self.obj, self._m2m_fieldname).add(new_attr)
         self._set_cache(key, category, new_attr)
         return new_attr
 
@@ -1103,6 +1113,37 @@ class ModelAttributeBackend(IAttributeBackend):
             attr_obj.value = new_value
             attr_obj.db_strvalue = None
         attr_obj.save(update_fields=["db_strvalue", "db_value", "db_category", "db_lock_storage"])
+
+    def do_batch_create_attributes(self, attr_data_list):
+        """
+        Create multiple attributes in a single INSERT using bulk_create.
+
+        Args:
+            attr_data_list: list of (key, category, lockstring, value, strvalue) tuples
+
+        Returns:
+            list of created Attribute objects
+        """
+        objs = []
+        for key, category, lockstring, value, strvalue in attr_data_list:
+            kwargs = {
+                "db_key": key,
+                "db_category": category,
+                "db_model": self._model,
+                "db_lock_storage": lockstring if lockstring else "",
+                "db_attrtype": self._attrtype,
+            }
+            if strvalue:
+                kwargs["db_value"] = None
+                kwargs["db_strvalue"] = value
+            else:
+                kwargs["db_value"] = to_pickle(value)
+                kwargs["db_strvalue"] = None
+            objs.append(self._attrclass(**kwargs))
+        created = self._attrclass.objects.bulk_create(objs)
+        for attr in created:
+            self._set_cache(attr.db_key, attr.db_category, attr)
+        return created
 
     def do_batch_finish(self, attr_objs):
         # Add new objects to m2m field all at once

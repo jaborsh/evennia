@@ -504,7 +504,7 @@ class ChannelDBManager(TypedObjectManager):
             locks=locks,
             keep_log=keep_log,
             tags=tags,
-            attrs=attrs,
+            attributes=attrs,
         )
 
         # this will trigger the save signal which in turn calls the
