@@ -397,6 +397,15 @@ class DefaultObject(ObjectDB, metaclass=TypeclassBase):
     # Used for sorting / filtering in inventories / room contents.
     _content_types = ("object",)
 
+    # --- Creation configuration ---
+    _creation_hook_name = "at_object_creation"
+    _post_creation_hook_name = "at_object_post_creation"
+    _createdict_field_map = (
+        ("location", "db_location"),
+        ("home", "db_home"),
+        ("destination", "db_destination"),
+    )
+
     objects = ObjectManager()
 
     # Used by get_display_desc when self.db.desc is None
@@ -1466,19 +1475,20 @@ class DefaultObject(ObjectDB, metaclass=TypeclassBase):
             lockstring = cls.get_default_lockstring(account=account, caller=caller, **kwargs)
             kwargs["locks"] = lockstring
 
+        # Batch extra attributes into create_object to avoid individual saves
+        attrs = list(kwargs.pop("attributes", None) or [])
+        if ip:
+            attrs.append(("creator_ip", ip))
+        if account:
+            attrs.append(("creator_id", account.id))
+        if description:
+            attrs.append(("desc", description))
+        if attrs:
+            kwargs["attributes"] = attrs
+
         # Create object
         try:
             obj = create.create_object(**kwargs)
-
-            # Record creator id and creation IP
-            if ip:
-                obj.db.creator_ip = ip
-            if account:
-                obj.db.creator_id = account.id
-
-            # Set description if provided
-            if description:
-                obj.db.desc = description
 
         except Exception as e:
             errors.append(f"An error occurred while creating '{key}' object: {e}")
@@ -1932,62 +1942,13 @@ class DefaultObject(ObjectDB, metaclass=TypeclassBase):
         overload the hooks called by this method.
 
         """
-        self.basetype_setup()
-        self.at_object_creation()
-        # initialize Attribute/TagProperties
-        self.init_evennia_properties()
-
-        if hasattr(self, "_createdict"):
-            # this will be set if the object was created by the utils.create function
-            # or the spawner. We want these kwargs to override the values set by
-            # the initial hooks.
-            cdict = self._createdict
-            updates = []
-            if not cdict.get("key"):
-                if not self.db_key:
-                    self.db_key = "#%i" % self.dbid
-                    updates.append("db_key")
-            elif self.key != cdict.get("key"):
-                updates.append("db_key")
-                self.db_key = cdict["key"]
-            if cdict.get("location") and self.location != cdict["location"]:
-                self.db_location = cdict["location"]
-                updates.append("db_location")
-            if cdict.get("home") and self.home != cdict["home"]:
-                self.home = cdict["home"]
-                updates.append("db_home")
-            if cdict.get("destination") and self.destination != cdict["destination"]:
-                self.destination = cdict["destination"]
-                updates.append("db_destination")
-            if updates:
-                self.save(update_fields=updates)
-
-            if cdict.get("permissions"):
-                self.permissions.batch_add(*cdict["permissions"])
-            if cdict.get("locks"):
-                self.locks.add(cdict["locks"])
-            if cdict.get("aliases"):
-                self.aliases.batch_add(*cdict["aliases"])
-            if cdict.get("location"):
-                cdict["location"].at_object_receive(self, None)
-                self.at_post_move(None)
-            if cdict.get("tags"):
-                # this should be a list of tags, tuples (key, category) or (key, category, data)
-                self.tags.batch_add(*cdict["tags"])
-            if cdict.get("attributes"):
-                # this should be tuples (key, val, ...)
-                self.attributes.batch_add(*cdict["attributes"])
-            if cdict.get("nattributes"):
-                # this should be a dict of nattrname:value
-                for key, value in cdict["nattributes"].items():
-                    self.nattributes.add(key, value)
-
-            del self._createdict
-
-        # run the post-setup hook
-        self.at_object_post_creation()
-
+        self._process_first_save()
         self.basetype_posthook_setup()
+
+    def _post_createdict_hooks(self, cdict):
+        if cdict.get("location"):
+            cdict["location"].at_object_receive(self, None)
+            self.at_post_move(None)
 
     # hooks called by the game engine #
 

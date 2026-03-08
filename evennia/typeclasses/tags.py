@@ -699,6 +699,36 @@ class TagHandler(object):
         else:
             return [to_str(tag.db_key) for tag in tags]
 
+    def _add_no_m2m(self, key, category=None, data=None):
+        """
+        Create/fetch tags and cache them, but don't link M2M.
+
+        Args:
+            key (str or list): Tag key(s).
+            category (str, optional): Tag category.
+            data (str, optional): Tag data.
+
+        Returns:
+            list: Created/fetched Tag objects.
+        """
+        if not key:
+            return []
+        if not self._cache_complete:
+            self._fullcache()
+        tag_objs = []
+        for tagstr in make_iter(key):
+            if not tagstr:
+                continue
+            tagstr = str(tagstr).strip().lower()
+            category = str(category).strip().lower() if category else category
+            data = str(data) if data is not None else None
+            tagobj = self.obj.__class__.objects.create_tag(
+                key=tagstr, category=category, data=data, tagtype=self._tagtype
+            )
+            self._setcache(tagstr, category, tagobj)
+            tag_objs.append(tagobj)
+        return tag_objs
+
     def batch_add(self, *args):
         """
         Batch-add tags from a list of tuples.
@@ -727,8 +757,13 @@ class TagHandler(object):
             else:
                 keys[tup[1]].append(tup[0])
                 data[tup[1]] = tup[2]  # overwrite previous
+        all_tags = []
         for category, key in keys.items():
-            self.add(key=key, category=category, data=data.get(category, None))
+            all_tags.extend(
+                self._add_no_m2m(key=key, category=category, data=data.get(category, None))
+            )
+        if all_tags:
+            getattr(self.obj, self._m2m_fieldname).add(*all_tags)
 
     def batch_remove(self, *args):
         """

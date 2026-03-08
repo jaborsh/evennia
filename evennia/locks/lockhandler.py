@@ -188,6 +188,7 @@ class LockHandler:
             _cache_lockfuncs()
         self.obj = obj
         self.locks = {}
+        self._defer_save = False
         try:
             self.reset()
         except LockException as err:
@@ -302,7 +303,12 @@ class LockHandler:
         Store locks to obj
 
         """
-        self.obj.lock_storage = ";".join([tup[2] for tup in self.locks.values()])
+        lock_string = ";".join([tup[2] for tup in self.locks.values()])
+        if self._defer_save:
+            # Bypass the idmapper's auto-saving __setattr__
+            object.__setattr__(self.obj, "db_lock_storage", lock_string)
+        else:
+            self.obj.lock_storage = lock_string
 
     def cache_lock_bypass(self, obj):
         """

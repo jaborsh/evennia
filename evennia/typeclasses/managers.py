@@ -7,6 +7,7 @@ all Attributes and TypedObjects).
 
 import shlex
 
+from django.conf import settings
 from django.db.models import Count, ExpressionWrapper, F, FloatField, Q
 from django.db.models.functions import Cast
 
@@ -18,6 +19,7 @@ from evennia.utils.utils import class_from_module, make_iter, variable_from_modu
 __all__ = ("TypedObjectManager",)
 _GA = object.__getattribute__
 _Tag = None
+_TAG_CACHE = {}  # module-level: (key, category, tagtype, dbmodel) -> Tag
 
 
 # Managers
@@ -420,8 +422,98 @@ class TypedObjectManager(idmapper.manager.SharedMemoryManager):
                 db_model=dbmodel,
                 db_tagtype=tagtype.strip().lower() if tagtype is not None else None,
             )
-            tag.save()
         return make_iter(tag)[0]
+
+    def batch_create_tags(self, tag_specs):
+        """
+        Create/fetch multiple tags in bulk. Uses an in-process cache +
+        1 SELECT + 1 bulk INSERT instead of N individual queries.
+
+        Args:
+            tag_specs: list of (key, category, data, tagtype) tuples
+
+        Returns:
+            list of Tag objects in the same order as tag_specs
+        """
+        global _Tag, _TAG_CACHE
+        if not _Tag:
+            from evennia.typeclasses.models import Tag as _Tag
+
+        dbmodel = self.model.__dbclass__.__name__.lower()
+
+        # Normalize specs
+        normalized = []
+        for key, category, data, tagtype in tag_specs:
+            normalized.append((
+                key.strip().lower() if key is not None else None,
+                category.strip().lower() if category and key is not None else None,
+                str(data) if data is not None else None,
+                tagtype.strip().lower() if tagtype is not None else None,
+            ))
+
+        if not normalized:
+            return []
+
+        # Check module-level cache first (skip in test env where DB gets flushed)
+        existing = {}
+        uncached_specs = []
+        use_cache = not getattr(settings, "TEST_ENVIRONMENT", False)
+        if use_cache:
+            for key, category, data, tagtype in normalized:
+                cache_key = (key, category, tagtype, dbmodel)
+                if cache_key in _TAG_CACHE:
+                    existing[(key, category, tagtype)] = _TAG_CACHE[cache_key]
+                else:
+                    uncached_specs.append((key, category, data, tagtype))
+        else:
+            uncached_specs = list(normalized)
+
+        if uncached_specs:
+            # Build SELECT for uncached specs
+            q = Q()
+            seen_q = set()
+            for key, category, _data, tagtype in uncached_specs:
+                q_key = (key, category, tagtype)
+                if q_key not in seen_q:
+                    q |= Q(db_key=key, db_category=category, db_tagtype=tagtype, db_model=dbmodel)
+                    seen_q.add(q_key)
+
+            for t in _Tag.objects.filter(q):
+                lookup = (t.db_key, t.db_category, t.db_tagtype)
+                existing[lookup] = t
+                if use_cache:
+                    _TAG_CACHE[(t.db_key, t.db_category, t.db_tagtype, dbmodel)] = t
+
+            # Identify missing tags, build bulk_create list
+            to_create = []
+            seen = set()
+            for key, category, data, tagtype in uncached_specs:
+                lookup = (key, category, tagtype)
+                if lookup not in existing and lookup not in seen:
+                    to_create.append(_Tag(
+                        db_key=key, db_category=category,
+                        db_data=data, db_model=dbmodel, db_tagtype=tagtype,
+                    ))
+                    seen.add(lookup)
+
+            if to_create:
+                created = _Tag.objects.bulk_create(to_create)
+                for t in created:
+                    lookup = (t.db_key, t.db_category, t.db_tagtype)
+                    existing[lookup] = t
+                    if use_cache:
+                        _TAG_CACHE[(t.db_key, t.db_category, t.db_tagtype, dbmodel)] = t
+
+        # Update data on existing tags where data was provided and differs
+        for key, category, data, tagtype in normalized:
+            if data is not None:
+                tag = existing.get((key, category, tagtype))
+                if tag and tag.db_data != data:
+                    tag.db_data = data
+                    tag.save(update_fields=["db_data"])
+
+        # Return tags in input order
+        return [existing[(key, category, tagtype)] for key, category, _data, tagtype in normalized]
 
     def dbref(self, dbref, reqhash=True):
         """

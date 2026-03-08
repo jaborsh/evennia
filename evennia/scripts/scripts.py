@@ -13,6 +13,7 @@ from evennia.scripts.manager import ScriptManager
 from evennia.scripts.models import ScriptDB
 from evennia.typeclasses.models import TypeclassBase
 from evennia.utils import create, logger
+from evennia.utils.utils import make_iter
 
 __all__ = ["DefaultScript", "DoNothing", "Store"]
 
@@ -398,6 +399,16 @@ class ScriptBase(ScriptDB, metaclass=TypeclassBase):
 
     # Access methods / hooks
 
+    # --- Creation configuration ---
+    _creation_hook_name = "at_script_creation"
+    _createdict_field_map = (
+        ("interval", "db_interval", lambda v: max(0, v)),
+        ("start_delay", "db_start_delay"),
+        ("repeats", "db_repeats", lambda v: max(0, v)),
+        ("persistent", "db_persistent"),
+        ("desc", "db_desc"),
+    )
+
     def at_first_save(self, **kwargs):
         """
         This is called after very first time this object is saved.
@@ -409,66 +420,16 @@ class ScriptBase(ScriptDB, metaclass=TypeclassBase):
                 overriding the call (unused by default).
 
         """
-        self.basetype_setup()
-        self.at_script_creation()
-        # initialize Attribute/TagProperties
-        self.init_evennia_properties()
+        self._process_first_save()
 
-        if hasattr(self, "_createdict"):
-            # this will only be set if the utils.create_script
-            # function was used to create the object. We want
-            # the create call's kwargs to override the values
-            # set by hooks.
-            cdict = self._createdict
-            updates = []
-            if not cdict.get("key"):
-                if not self.db_key:
-                    if hasattr(self, "key"):
-                        # take key from the object typeclass
-                        self.db_key = self.key
-                    else:
-                        # no key set anywhere, use class+dbid as key
-                        self.db_key = f"{self.__class__.__name__}(#{self.dbid})"
-                    updates.append("db_key")
-            elif self.db_key != cdict["key"]:
-                self.db_key = cdict["key"]
-                updates.append("db_key")
-            if cdict.get("interval") and self.interval != cdict["interval"]:
-                self.db_interval = max(0, cdict["interval"])
-                updates.append("db_interval")
-            if cdict.get("start_delay") and self.start_delay != cdict["start_delay"]:
-                self.db_start_delay = cdict["start_delay"]
-                updates.append("db_start_delay")
-            if cdict.get("repeats") and self.repeats != cdict["repeats"]:
-                self.db_repeats = max(0, cdict["repeats"])
-                updates.append("db_repeats")
-            if cdict.get("persistent") and self.persistent != cdict["persistent"]:
-                self.db_persistent = cdict["persistent"]
-                updates.append("db_persistent")
-            if cdict.get("desc") and self.desc != cdict["desc"]:
-                self.db_desc = cdict["desc"]
-                updates.append("db_desc")
-            if updates:
-                self.save(update_fields=updates)
+    def _default_key(self):
+        if self.db_key:
+            return self.db_key
+        return f"{self.__class__.__name__}(#{self.dbid})"
 
-            if cdict.get("permissions"):
-                self.permissions.batch_add(*cdict["permissions"])
-            if cdict.get("locks"):
-                self.locks.add(cdict["locks"])
-            if cdict.get("tags"):
-                # this should be a list of tags, tuples (key, category) or (key, category, data)
-                self.tags.batch_add(*cdict["tags"])
-            if cdict.get("attributes"):
-                # this should be tuples (key, val, ...)
-                self.attributes.batch_add(*cdict["attributes"])
-            if cdict.get("nattributes"):
-                # this should be a dict of nattrname:value
-                for key, value in cdict["nattributes"]:
-                    self.nattributes.add(key, value)
-
-            if cdict.get("autostart"):
-                # autostart the script
-                self._start_task(force_restart=True)
+    def _post_createdict_hooks(self, cdict):
+        if cdict.get("autostart"):
+            self._start_task(force_restart=True)
 
     def delete(self):
         """

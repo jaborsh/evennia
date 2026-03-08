@@ -135,6 +135,9 @@ class DefaultChannel(ChannelDB, metaclass=TypeclassBase):
     channel_msg_nick_pattern = r"{alias}\s*?|{alias}\s+?(?P<arg1>.+?)"
     channel_msg_nick_replacement = "@channel {channelname} = $1"
 
+    # --- Creation configuration ---
+    _creation_hook_name = "at_channel_creation"
+
     def at_first_save(self):
         """
         Called by the typeclass system the very first time the channel
@@ -142,32 +145,13 @@ class DefaultChannel(ChannelDB, metaclass=TypeclassBase):
         the hooks called by this method.
 
         """
-        self.basetype_setup()
-        self.at_channel_creation()
-        # initialize Attribute/TagProperties
-        self.init_evennia_properties()
+        self._process_first_save()
 
-        if hasattr(self, "_createdict"):
-            # this is only set if the channel was created
-            # with the utils.create.create_channel function.
-            cdict = self._createdict
-            if not cdict.get("key"):
-                if not self.db_key:
-                    self.db_key = "#i" % self.dbid
-            elif cdict["key"] and self.key != cdict["key"]:
-                self.key = cdict["key"]
-            if cdict.get("aliases"):
-                self.aliases.add(cdict["aliases"])
-            if cdict.get("locks"):
-                self.locks.add(cdict["locks"])
-            if cdict.get("keep_log"):
-                self.attributes.add("keep_log", cdict["keep_log"])
-            if cdict.get("desc"):
-                self.attributes.add("desc", cdict["desc"])
-            if cdict.get("tags"):
-                self.tags.batch_add(*cdict["tags"])
-            if cdict.get("attrs"):
-                self.attributes.batch_add(*cdict["attrs"])
+    def _post_createdict_hooks(self, cdict):
+        if cdict.get("keep_log"):
+            self.attributes.add("keep_log", cdict["keep_log"])
+        if cdict.get("desc"):
+            self.attributes.add("desc", cdict["desc"])
 
     def basetype_setup(self):
         self.locks.add("send:all();listen:all();control:perm(Admin)")
