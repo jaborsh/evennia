@@ -10,7 +10,7 @@ import sys
 from subprocess import STDOUT, Popen
 
 from django.conf import settings
-from twisted.internet import protocol
+from twisted.internet import protocol, threads
 
 import evennia
 from evennia.server.portal import amp
@@ -195,8 +195,10 @@ class AMPServerProtocol(amp.AMPMultiConnectionProtocol):
             self.factory.portal.server_twistd_cmd = server_twistd_cmd
             logfile.flush()
         if process and not _is_windows():
-            # avoid zombie-process on Unix/BSD
-            process.wait()
+            # Reap the child process in a thread to avoid blocking the reactor.
+            # twistd daemonizes (forks and parent exits) so this returns quickly,
+            # but if startup fails before the fork it could block indefinitely.
+            threads.deferToThread(process.wait)
         return
 
     def wait_for_disconnect(self, callback, *args, **kwargs):

@@ -11,6 +11,10 @@ evennia/server/server_runner.py).
 import os
 import sys
 
+# Also set in twistd_asyncio.py bootstrap; repeated here as a fallback in case
+# this module is ever loaded without the bootstrap (e.g. tests, direct import).
+os.environ["DJANGO_ALLOW_ASYNC_UNSAFE"] = "true"
+
 import django
 from twisted.logger import globalLogPublisher
 

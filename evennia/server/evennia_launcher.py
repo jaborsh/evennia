@@ -5,7 +5,7 @@ Evennia launcher program
 This is the start point for running Evennia.
 
 Sets the appropriate environmental variables for managing an Evennia game. It will start and connect
-to the Portal, through which the Server is also controlled. This pprogram
+to the Portal, through which the Server is also controlled. This program
 
 Run the script with the -h flag to see usage information.
 
@@ -44,7 +44,7 @@ EVENNIA_TEMPLATE = os.path.join(EVENNIA_LIB, "game_template")
 EVENNIA_PROFILING = os.path.join(EVENNIA_SERVER, "profiling")
 EVENNIA_DUMMYRUNNER = os.path.join(EVENNIA_PROFILING, "dummyrunner.py")
 
-TWISTED_BINARY = "twistd"
+TWISTD_ASYNCIO = [sys.executable, "-m", "evennia.server.twistd_asyncio"]
 
 # Game directory structure
 SETTINGFILE = "settings.py"
@@ -512,16 +512,18 @@ def _parse_status(response):
 
 def _get_twistd_cmdline(pprofiler, sprofiler):
     """
-    Compile the command line for starting a Twisted application using the 'twistd' executable.
+    Compile the command line for starting a Twisted application using the asyncio reactor bootstrap.
 
     """
     portal_cmd = [
-        TWISTED_BINARY,
+        *TWISTD_ASYNCIO,
+        "--reactor=asyncio",
         f"--python={PORTAL_PY_FILE}",
         "--logger=evennia.utils.logger.GetPortalLogObserver",
     ]
     server_cmd = [
-        TWISTED_BINARY,
+        *TWISTD_ASYNCIO,
+        "--reactor=asyncio",
         f"--python={SERVER_PY_FILE}",
         "--logger=evennia.utils.logger.GetServerLogObserver",
     ]
@@ -1852,11 +1854,6 @@ def init_game_directory(path, check_db=True, need_gamedir=True):
         print(ERROR_LOGDIR_MISSING.format(logfiles=errstr))
         sys.exit()
 
-    if _is_windows():
-        global TWISTED_BINARY
-        TWISTED_BINARY = os.path.join(os.path.dirname(sys.executable), "twistd.exe")
-        if not os.path.exists(TWISTED_BINARY):  # venv isn't being used
-            TWISTED_BINARY = os.path.join(os.path.dirname(sys.executable), "Scripts\\twistd.exe")
 
 
 def run_dummyrunner(number_of_dummies):

@@ -1,6 +1,6 @@
 """
-This module implements the main Evennia server process, the core of
-the game engine.
+This module implements the main Evennia Portal process, the networking
+front-end of the engine.
 
 This module should be started with the 'twistd' executable since it
 sets up all the networking features.  (this is done automatically
@@ -10,6 +10,10 @@ by game/evennia.py).
 
 import os
 import sys
+
+# Also set in twistd_asyncio.py bootstrap; repeated here as a fallback in case
+# this module is ever loaded without the bootstrap (e.g. tests, direct import).
+os.environ["DJANGO_ALLOW_ASYNC_UNSAFE"] = "true"
 
 import django
 from twisted.logger import globalLogPublisher
