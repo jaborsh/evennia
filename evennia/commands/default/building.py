@@ -5,10 +5,11 @@ Building and world design commands
 import re
 import typing
 
-import evennia
 from django.conf import settings
 from django.core.paginator import Paginator
 from django.db.models import Max, Min, Q
+
+import evennia
 from evennia import InterruptCommand
 from evennia.commands.cmdhandler import generate_cmdset_providers, get_and_merge_cmdsets
 from evennia.locks.lockhandler import LockException
@@ -3991,10 +3992,11 @@ class CmdTag(COMMAND_DEFAULT_CLASS):
             return
         if "search" in self.switches:
             # search by tag
-            tag = self.args
+            tag = self.args.strip()
             category = None
             if ":" in tag:
                 tag, category = [part.strip() for part in tag.split(":", 1)]
+            tag = tag or None  # pass None instead of "" to match all keys
             objs = search.search_tag(tag, category=category)
             nobjs = len(objs)
             if nobjs > 0:
