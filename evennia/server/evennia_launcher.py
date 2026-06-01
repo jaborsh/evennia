@@ -81,6 +81,7 @@ NO_REACTOR_STOP = False
 AMP_PORT = None
 AMP_HOST = None
 AMP_INTERFACE = None
+AMP_CONNECT_TIMEOUT = None
 AMP_CONNECTION = None
 
 SRELOAD = chr(14)  # server reloading (have portal start a new server)
@@ -664,7 +665,9 @@ def send_instruction(operation, arguments, callback=None, errback=None):
         return _send()
     else:
         # we must connect first, send once connected
-        point = endpoints.TCP4ClientEndpoint(reactor, AMP_HOST, AMP_PORT)
+        point = endpoints.TCP4ClientEndpoint(
+            reactor, AMP_HOST, AMP_PORT, timeout=AMP_CONNECT_TIMEOUT
+        )
         deferred = endpoints.connectProtocol(point, AMPLauncherProtocol())
         deferred.addCallbacks(_on_connect, _on_connect_fail)
         REACTOR_RUN = True
@@ -1814,7 +1817,7 @@ def init_game_directory(path, check_db=True, need_gamedir=True):
         return
 
     # set up the Evennia executables and log file locations
-    global AMP_PORT, AMP_HOST, AMP_INTERFACE
+    global AMP_PORT, AMP_HOST, AMP_INTERFACE, AMP_CONNECT_TIMEOUT
     global SERVER_PY_FILE, PORTAL_PY_FILE
     global SERVER_LOGFILE, PORTAL_LOGFILE, HTTP_LOGFILE
     global SERVER_PIDFILE, PORTAL_PIDFILE
@@ -1824,6 +1827,7 @@ def init_game_directory(path, check_db=True, need_gamedir=True):
     AMP_PORT = settings.AMP_PORT
     AMP_HOST = settings.AMP_HOST
     AMP_INTERFACE = settings.AMP_INTERFACE
+    AMP_CONNECT_TIMEOUT = settings.AMP_CONNECT_TIMEOUT
 
     SERVER_PY_FILE = os.path.join(EVENNIA_LIB, "server", "server.py")
     PORTAL_PY_FILE = os.path.join(EVENNIA_LIB, "server", "portal", "portal.py")
@@ -1851,7 +1855,6 @@ def init_game_directory(path, check_db=True, need_gamedir=True):
         )
         print(ERROR_LOGDIR_MISSING.format(logfiles=errstr))
         sys.exit()
-
 
 
 def run_dummyrunner(number_of_dummies):
