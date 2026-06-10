@@ -3,11 +3,17 @@ Unit tests for typeclass base system
 
 """
 
+import re
+from io import StringIO
+
+from django.core.management import call_command
 from django.test import override_settings
 from mock import patch
 from parameterized import parameterized
 
 from evennia.objects.objects import DefaultObject
+from evennia.typeclasses.attributes import Attribute
+from evennia.utils.dbserialize import to_pickle
 from evennia.utils.test_resources import BaseEvenniaTest, EvenniaTestCase
 
 # ------------------------------------------------------------
@@ -111,6 +117,189 @@ class TestAttributes(BaseEvenniaTest):
         self.obj1.attributes.add("test", "two", strattr=True)
         self.assertEqual(self.obj1.attributes.get("test"), None)
         self.assertEqual(self.obj1.attributes.get("test", strattr=True), "two")
+
+
+class TestAttributeJsonStorage(BaseEvenniaTest):
+    """
+    Test the dual JSON/pickle Attribute storage columns.
+
+    """
+
+    def _columns(self, key, obj=None):
+        """Fetch the raw storage columns for an attribute from the database."""
+        attr = (obj or self.obj1).attributes.get(key, return_obj=True)
+        return Attribute.objects.filter(id=attr.id).values(
+            "db_value", "db_json", "db_storage_type"
+        )[0]
+
+    def _make_legacy_attr(self, key, value, obj=None):
+        """Create a pre-migration-style row writing the pickle column directly."""
+        obj = obj or self.obj1
+        attr = Attribute(db_key=key, db_value=to_pickle(value), db_model="objectdb")
+        attr.save()
+        obj.db_attributes.add(attr)
+        obj.attributes.reset_cache()
+        return attr
+
+    def test_json_storage_columns(self):
+        self.obj1.db.jsonval = [1, "a", (2, 3)]
+        cols = self._columns("jsonval")
+        self.assertEqual(cols["db_storage_type"], "json")
+        self.assertIsNone(cols["db_value"])
+        self.assertEqual(cols["db_json"], [1, "a", {"__tuple__": [2, 3]}])
+        self.assertEqual(self.obj1.db.jsonval, [1, "a", (2, 3)])
+
+    def test_pickle_fallback_columns(self):
+        self.obj1.db.binval = b"bytes"
+        cols = self._columns("binval")
+        self.assertEqual(cols["db_storage_type"], "pickle")
+        self.assertIsNone(cols["db_json"])
+        self.assertEqual(self.obj1.db.binval, b"bytes")
+
+    def test_none_value(self):
+        self.obj1.db.noneval = None
+        cols = self._columns("noneval")
+        self.assertEqual(cols["db_storage_type"], "pickle")
+        self.assertIsNone(cols["db_value"])
+        self.assertIsNone(cols["db_json"])
+        self.assertIsNone(self.obj1.db.noneval)
+
+    def test_saver_mutation_stays_json(self):
+        self.obj1.db.lst = [1, 2]
+        self.obj1.db.lst.append(3)
+        self.obj1.attributes.reset_cache()
+        self.assertEqual(self.obj1.db.lst, [1, 2, 3])
+        self.assertEqual(self._columns("lst")["db_storage_type"], "json")
+
+    def test_saver_mutation_flips_to_pickle(self):
+        self.obj1.db.lst = [1]
+        self.obj1.db.lst.append(b"x")
+        self.obj1.attributes.reset_cache()
+        self.assertEqual(self.obj1.db.lst, [1, b"x"])
+        self.assertEqual(self._columns("lst")["db_storage_type"], "pickle")
+
+    def test_dbobj_value(self):
+        self.obj1.db.ref = self.obj2
+        cols = self._columns("ref")
+        self.assertEqual(cols["db_storage_type"], "json")
+        self.assertIn("__dbobj__", cols["db_json"])
+        self.assertEqual(cols["db_json"]["__dbobj__"][2], self.obj2.id)
+        self.assertEqual(self.obj1.db.ref, self.obj2)
+
+    def test_dbobj_value_deleted(self):
+        self.obj1.db.ref = self.obj2
+        self.obj2.delete()
+        self.assertIsNone(self.obj1.db.ref)
+
+    def test_legacy_pickle_row(self):
+        self._make_legacy_attr("legacy", {"a": (1,)})
+        cols = self._columns("legacy")
+        self.assertEqual(cols["db_storage_type"], "pickle")
+        self.assertEqual(self.obj1.db.legacy, {"a": (1,)})
+
+    def test_strvalue_columns(self):
+        self.obj1.attributes.add("strval", "two", strattr=True)
+        cols = self._columns("strval")
+        self.assertEqual(cols["db_storage_type"], "pickle")
+        self.assertIsNone(cols["db_value"])
+        self.assertIsNone(cols["db_json"])
+        self.assertEqual(self.obj1.attributes.get("strval", strattr=True), "two")
+
+    def test_batch_create_columns(self):
+        self.obj1.attributes.batch_add(("bkey1", [1, (2,)]), ("bkey2", b"x"))
+        self.assertEqual(self._columns("bkey1")["db_storage_type"], "json")
+        self.assertEqual(self._columns("bkey2")["db_storage_type"], "pickle")
+        self.assertEqual(self.obj1.db.bkey1, [1, (2,)])
+        self.assertEqual(self.obj1.db.bkey2, b"x")
+
+    def test_serialized_value(self):
+        self.obj1.db.jval = {"a": (1,)}
+        attr = self.obj1.attributes.get("jval", return_obj=True)
+        self.assertEqual(attr.serialized_value(), {"a": (1,)})
+        self.obj1.db.pval = b"x"
+        attr = self.obj1.attributes.get("pval", return_obj=True)
+        self.assertEqual(attr.serialized_value(), b"x")
+
+    def test_query_finds_json_rows(self):
+        self.obj1.db.qval = {"a": 1}
+        found = self.obj1.__class__.objects.get_by_attribute(key="qval", value={"a": 1})
+        self.assertIn(self.obj1, found)
+
+    def test_query_finds_pickle_rows(self):
+        self.obj1.db.qbin = b"z"
+        found = self.obj1.__class__.objects.get_by_attribute(key="qbin", value=b"z")
+        self.assertIn(self.obj1, found)
+
+    def test_query_finds_mixed_storage(self):
+        # same value in a legacy pickle row and a new json row
+        self.obj1.db.qmixed = "samevalue"
+        self._make_legacy_attr("qmixed", "samevalue", obj=self.obj2)
+        found = self.obj1.__class__.objects.get_by_attribute(key="qmixed", value="samevalue")
+        self.assertIn(self.obj1, found)
+        self.assertIn(self.obj2, found)
+
+    def test_get_objs_with_attr_value(self):
+        self.obj1.db.qobj = self.obj2
+        found = self.obj1.__class__.objects.get_objs_with_attr_value("qobj", self.obj2)
+        self.assertIn(self.obj1, found)
+
+    def test_monitor_fires_on_json_save(self):
+        from evennia.scripts.monitorhandler import MONITOR_HANDLER
+
+        with patch.object(MONITOR_HANDLER, "at_update") as mock_update:
+            self.obj1.db.monval = {"a": 1}
+            fieldnames = [call.args[1] for call in mock_update.call_args_list]
+            self.assertIn("db_value", fieldnames)
+
+
+class TestConvertAttributeStorage(BaseEvenniaTest):
+    """
+    Test the convert_attribute_storage management command.
+
+    """
+
+    def _convert(self, *args):
+        out = StringIO()
+        call_command("convert_attribute_storage", *args, stdout=out)
+        return int(re.search(r"(?:Converted|Would convert) (\d+)", out.getvalue()).group(1))
+
+    def _make_legacy_attr(self, key, value):
+        attr = Attribute(db_key=key, db_value=to_pickle(value), db_model="objectdb")
+        attr.save()
+        self.obj1.db_attributes.add(attr)
+        return attr
+
+    def test_convert(self):
+        legacy_keys = ("conv1", "conv2", "conv3")
+        for key in legacy_keys:
+            self._make_legacy_attr(key, {key: (1, 2)})
+        self.obj1.db.binval = b"unconvertible"
+
+        converted = self._convert()
+        self.assertGreaterEqual(converted, 3)
+
+        self.obj1.attributes.reset_cache()
+        for key in legacy_keys:
+            cols = Attribute.objects.filter(db_key=key).values(
+                "db_value", "db_json", "db_storage_type"
+            )[0]
+            self.assertEqual(cols["db_storage_type"], "json")
+            self.assertIsNone(cols["db_value"])
+            self.assertEqual(self.obj1.attributes.get(key), {key: (1, 2)})
+        # the unconvertible row stays as pickle and still round-trips
+        cols = Attribute.objects.filter(db_key="binval").values("db_storage_type")[0]
+        self.assertEqual(cols["db_storage_type"], "pickle")
+        self.assertEqual(self.obj1.db.binval, b"unconvertible")
+
+        # idempotency: a second run converts nothing
+        self.assertEqual(self._convert(), 0)
+
+    def test_dry_run(self):
+        self._make_legacy_attr("dryval", [1, 2])
+        would_convert = self._convert("--dry-run")
+        self.assertGreaterEqual(would_convert, 1)
+        cols = Attribute.objects.filter(db_key="dryval").values("db_storage_type")[0]
+        self.assertEqual(cols["db_storage_type"], "pickle")
 
 
 class TestTypedObjectManager(BaseEvenniaTest):

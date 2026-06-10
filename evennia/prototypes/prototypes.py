@@ -647,14 +647,18 @@ def search_prototype(
                 not_found.append(db_id)
 
         if not_found:
-            new_db_matches = (
+            rows = (
                 Attribute.objects.filter(scriptdb__pk__in=not_found, db_key="prototype")
-                .values_list("db_value", flat=True)
+                .values_list("db_value", "db_json", "db_storage_type")
                 .order_by("scriptdb__db_key")
             )
+            new_db_matches = [
+                dbserialize.storage_to_intermediate(storage_type, pickle_value, json_value)
+                for pickle_value, json_value, storage_type in rows
+            ]
             for db_id, prot in zip(not_found, new_db_matches):
                 DB_PROTOTYPE_CACHE.add(db_id, prot)
-            db_matches.extend(list(new_db_matches))
+            db_matches.extend(new_db_matches)
 
         return db_matches
 

@@ -80,7 +80,7 @@ class AttributeForm(forms.ModelForm):
         if hasattr(self.instance, "attribute"):
             attr_key = self.instance.attribute.db_key
             attr_category = self.instance.attribute.db_category
-            attr_value = self.instance.attribute.db_value
+            attr_value = self.instance.attribute.serialized_value()
             attr_type = self.instance.attribute.db_attrtype
             attr_lockstring = self.instance.attribute.db_lock_storage
             self.fields["attr_key"].initial = attr_key

@@ -14,6 +14,7 @@ from django.db.models.functions import Cast
 from evennia.typeclasses.attributes import Attribute
 from evennia.typeclasses.tags import Tag
 from evennia.utils import idmapper
+from evennia.utils.dbserialize import attr_value_q
 from evennia.utils.utils import class_from_module, make_iter, variable_from_module
 
 __all__ = ("TypedObjectManager",)
@@ -47,7 +48,7 @@ class TypedObjectManager(idmapper.manager.SharedMemoryManager):
             category (str, optional): The category of the attribute(s) to search for.
             value (str, optional): The attribute value to search for.
                 Note that this is not a very efficient operation since it
-                will query for a pickled entity. Mutually exclusive to
+                will query the serialized value columns. Mutually exclusive to
                 `strvalue`.
             strvalue (str, optional): The str-value to search for.
                 Most Attributes will not have strvalue set. This is
@@ -74,11 +75,13 @@ class TypedObjectManager(idmapper.manager.SharedMemoryManager):
             query.append(("attribute__db_category", category))
         if strvalue:
             query.append(("attribute__db_strvalue", strvalue))
+        filter_q = Q(**dict(query))
         if value:
-            # no reason to make strvalue/value mutually exclusive at this level
-            query.append(("attribute__db_value", value))
+            # no reason to make strvalue/value mutually exclusive at this level;
+            # the value may live in either storage column (json or pickle)
+            filter_q &= attr_value_q(value, prefix="attribute")
         return Attribute.objects.filter(
-            pk__in=self.model.db_attributes.through.objects.filter(**dict(query)).values_list(
+            pk__in=self.model.db_attributes.through.objects.filter(filter_q).values_list(
                 "attribute_id", flat=True
             )
         )
@@ -119,7 +122,7 @@ class TypedObjectManager(idmapper.manager.SharedMemoryManager):
                 to search for.
             value (str, optional): The attribute value to search for.
                 Note that this is not a very efficient operation since it
-                will query for a pickled entity. Mutually exclusive to
+                will query the serialized value columns. Mutually exclusive to
                 `strvalue`.
             strvalue (str, optional): The str-value to search for.
                 Most Attributes will not have strvalue set. This is
@@ -143,12 +146,14 @@ class TypedObjectManager(idmapper.manager.SharedMemoryManager):
             query.append(("db_attributes__db_key", key))
         if category:
             query.append(("db_attributes__db_category", category))
+        filter_q = Q(**dict(query))
         if strvalue:
-            query.append(("db_attributes__db_strvalue", strvalue))
+            filter_q &= Q(db_attributes__db_strvalue=strvalue)
         elif value:
-            # strvalue and value are mutually exclusive
-            query.append(("db_attributes__db_value", value))
-        return self.filter(**dict(query))
+            # strvalue and value are mutually exclusive; the value may live
+            # in either storage column (json or pickle)
+            filter_q &= attr_value_q(value, prefix="db_attributes")
+        return self.filter(filter_q)
 
     def get_by_nick(self, key=None, nick=None, category="inputline"):
         """
@@ -444,12 +449,14 @@ class TypedObjectManager(idmapper.manager.SharedMemoryManager):
         # Normalize specs
         normalized = []
         for key, category, data, tagtype in tag_specs:
-            normalized.append((
-                key.strip().lower() if key is not None else None,
-                category.strip().lower() if category and key is not None else None,
-                str(data) if data is not None else None,
-                tagtype.strip().lower() if tagtype is not None else None,
-            ))
+            normalized.append(
+                (
+                    key.strip().lower() if key is not None else None,
+                    category.strip().lower() if category and key is not None else None,
+                    str(data) if data is not None else None,
+                    tagtype.strip().lower() if tagtype is not None else None,
+                )
+            )
 
         if not normalized:
             return []
@@ -490,10 +497,15 @@ class TypedObjectManager(idmapper.manager.SharedMemoryManager):
             for key, category, data, tagtype in uncached_specs:
                 lookup = (key, category, tagtype)
                 if lookup not in existing and lookup not in seen:
-                    to_create.append(_Tag(
-                        db_key=key, db_category=category,
-                        db_data=data, db_model=dbmodel, db_tagtype=tagtype,
-                    ))
+                    to_create.append(
+                        _Tag(
+                            db_key=key,
+                            db_category=category,
+                            db_data=data,
+                            db_model=dbmodel,
+                            db_tagtype=tagtype,
+                        )
+                    )
                     seen.add(lookup)
 
             if to_create:

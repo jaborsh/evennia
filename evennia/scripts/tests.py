@@ -17,6 +17,7 @@ from evennia.scripts.taskhandler import TASK_HANDLER
 from evennia.scripts.tickerhandler import TickerHandler
 from evennia.typeclasses.attributes import AttributeProperty
 from evennia.utils.create import create_script
+from evennia.utils.dbserialize import attr_value_q
 from evennia.utils.test_resources import BaseEvenniaTest, EvenniaTest
 
 
@@ -187,7 +188,8 @@ class TestIssue3194(BaseEvenniaTest):
             self.assertEqual(
                 list(
                     ScriptWithStoredRef.objects.filter(
-                        db_attributes__db_key="linked", db_attributes__db_value=script_b
+                        attr_value_q(script_b, prefix="db_attributes"),
+                        db_attributes__db_key="linked",
                     )
                 ),
                 [script_a],
@@ -195,7 +197,8 @@ class TestIssue3194(BaseEvenniaTest):
             self.assertEqual(
                 list(
                     ScriptWithStoredRef.objects.filter(
-                        db_attributes__db_key="linked", db_attributes__db_value=self.room1
+                        attr_value_q(self.room1, prefix="db_attributes"),
+                        db_attributes__db_key="linked",
                     )
                 ),
                 [script_c],

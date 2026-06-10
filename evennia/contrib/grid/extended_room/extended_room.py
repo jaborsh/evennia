@@ -59,6 +59,7 @@ from evennia import (
     utils,
 )
 from evennia.typeclasses.attributes import AttributeProperty
+from evennia.utils.dbserialize import storage_to_intermediate
 from evennia.utils.utils import list_to_string, repeat
 
 # error return function, needed by Extended Look command
@@ -383,11 +384,12 @@ class ExtendedRoom(DefaultRoom):
 
         # get all available descriptions on this room
         # note: *_desc is the old form, we support it for legacy
-        descriptions = dict(
-            self.db_attributes.filter(
+        descriptions = {
+            key: storage_to_intermediate(storage_type, pickle_value, json_value)
+            for key, pickle_value, json_value, storage_type in self.db_attributes.filter(
                 Q(db_key__startswith="desc_") | Q(db_key__endswith="_desc")
-            ).values_list("db_key", "db_value")
-        )
+            ).values_list("db_key", "db_value", "db_json", "db_storage_type")
+        }
 
         for roomstate in sorted(room_states):
             if roomstate not in seasons:

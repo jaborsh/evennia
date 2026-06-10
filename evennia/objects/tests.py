@@ -14,6 +14,7 @@ from evennia.typeclasses.tags import (
 )
 from evennia.utils import create, search
 from evennia.utils.ansi import strip_ansi
+from evennia.utils.dbserialize import attr_value_q
 from evennia.utils.test_resources import BaseEvenniaTest, EvenniaTestCase
 
 
@@ -740,7 +741,7 @@ class TestProperties(EvenniaTestCase):
 
         # now we query for it by going via the Attribute table
         query = TestObjectPropertiesClass.objects.filter(
-            db_attributes__db_key="attr1", db_attributes__db_value=obj2
+            attr_value_q(obj2, prefix="db_attributes"), db_attributes__db_key="attr1"
         )
 
         self.assertEqual(list(query), [obj1])
@@ -758,7 +759,7 @@ class TestProperties(EvenniaTestCase):
         try:
             obj.attr1 = obj
             query = TestObjectPropertiesClass.objects.filter(
-                db_attributes__db_key="attr1", db_attributes__db_value=obj
+                attr_value_q(obj, prefix="db_attributes"), db_attributes__db_key="attr1"
             )
             self.assertEqual(list(query), [obj])
         finally:
@@ -775,9 +776,9 @@ class TestProperties(EvenniaTestCase):
         try:
             holder.attributes.add("attached", leg, category="systems")
             query = DefaultObject.objects.filter_family(
+                attr_value_q(leg, prefix="db_attributes"),
                 db_attributes__db_key="attached",
                 db_attributes__db_category="systems",
-                db_attributes__db_value=leg,
             )
             self.assertIn(holder, query)
         finally:

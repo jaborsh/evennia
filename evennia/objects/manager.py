@@ -11,6 +11,7 @@ from django.db.models.fields import exceptions
 
 from evennia.server import signals
 from evennia.typeclasses.managers import TypeclassManager, TypedObjectManager
+from evennia.utils.dbserialize import attr_value_q
 from evennia.utils.utils import (
     class_from_module,
     dbid_to_obj,
@@ -187,9 +188,11 @@ class ObjectDBManager(TypedObjectManager):
                 `attribute_value` criterions.
 
         Notes:
-            This uses the Attribute's PickledField to transparently search the database by matching
-            the internal representation. This is reasonably effective but since Attribute values
-            cannot be indexed, searching by Attribute key is to be preferred whenever possible.
+            This transparently searches both Attribute storage columns - the
+            JSON column for JSON-representable values and the pickled column
+            for everything else - by matching the internal representation.
+            Searching by Attribute key is still to be preferred whenever
+            possible.
 
         """
         cand_restriction = (
@@ -203,7 +206,7 @@ class ObjectDBManager(TypedObjectManager):
             cand_restriction
             & type_restriction
             & Q(db_attributes__db_key=attribute_name)
-            & Q(db_attributes__db_value=attribute_value)
+            & attr_value_q(attribute_value, prefix="db_attributes")
         ).order_by("id")
         return results
 

@@ -19,7 +19,12 @@ from django.db import models
 from django.utils.encoding import smart_str
 
 from evennia.locks.lockhandler import LockHandler
-from evennia.utils.dbserialize import from_pickle, to_pickle
+from evennia.utils.dbserialize import (
+    VALUE_STORAGE_FIELDS,
+    attribute_storage_fields,
+    from_pickle,
+    storage_to_intermediate,
+)
 from evennia.utils.idmapper.models import SharedMemoryModel
 from evennia.utils.picklefield import PickledObjectField
 from evennia.utils.utils import is_iter, lazy_property, make_iter, to_str
@@ -365,7 +370,29 @@ class Attribute(IAttribute, SharedMemoryModel):
             "The data returned when the attribute is accessed. Must be "
             "written as a Python literal if editing through the admin "
             "interface. Attribute values which are not Python literals "
-            "cannot be edited through the admin interface."
+            "cannot be edited through the admin interface. Only used when "
+            "db_storage_type is 'pickle'; JSON-representable values are "
+            "stored in db_json instead."
+        ),
+    )
+    db_json = models.JSONField(
+        "json value",
+        null=True,
+        blank=True,
+        help_text=(
+            "JSON storage for the attribute value (used when db_storage_type "
+            "is 'json'). Types JSON cannot represent natively are wrapped in "
+            "reserved single-key dicts like '__tuple__' or '__dbobj__' - see "
+            "evennia.utils.dbserialize."
+        ),
+    )
+    db_storage_type = models.CharField(
+        "storage type",
+        max_length=8,
+        default="pickle",
+        choices=[("pickle", "pickle"), ("json", "json")],
+        help_text=(
+            "Which column holds this Attribute's value: 'pickle' (db_value) " "or 'json' (db_json)."
         ),
     )
     db_strvalue = models.TextField(
@@ -437,16 +464,27 @@ class Attribute(IAttribute, SharedMemoryModel):
 
     lock_storage = property(__lock_storage_get, __lock_storage_set, __lock_storage_del)
 
-    # value property (wraps db_value)
+    def serialized_value(self):
+        """
+        Get the value in serialized intermediate form (as produced by
+        `to_pickle`), regardless of which storage column holds it.
+
+        Returns:
+            any: The intermediate form; pass to `from_pickle` for live data.
+
+        """
+        return storage_to_intermediate(self.db_storage_type, self.db_value, self.db_json)
+
+    # value property (wraps the db_value/db_json storage columns)
     @property
     def value(self):
         """
         Getter. Allows for `value = self.value`.
         We cannot cache here since it makes certain cases (such
         as storing a dbobj which is then deleted elsewhere) out-of-sync.
-        The overhead of unpickling seems hard to avoid.
+        The overhead of deserializing seems hard to avoid.
         """
-        return from_pickle(self.db_value, db_obj=self)
+        return from_pickle(self.serialized_value(), db_obj=self)
 
     @value.setter
     def value(self, new_value):
@@ -454,8 +492,11 @@ class Attribute(IAttribute, SharedMemoryModel):
         Setter. Allows for self.value = value. We cannot cache here,
         see self.__value_get.
         """
-        self.db_value = to_pickle(new_value)
-        self.save(update_fields=["db_value"])
+        for fieldname, fieldval in attribute_storage_fields(new_value).items():
+            setattr(self, fieldname, fieldval)
+        # update_fields always includes db_value so monitors keyed on that
+        # field name keep firing regardless of storage column
+        self.save(update_fields=VALUE_STORAGE_FIELDS)
 
     @value.deleter
     def value(self):
@@ -1082,10 +1123,10 @@ class ModelAttributeBackend(IAttributeBackend):
             "db_attrtype": self._attrtype,
         }
         if strvalue:
-            kwargs["db_value"] = None
+            kwargs.update(attribute_storage_fields(None))
             kwargs["db_strvalue"] = value
         else:
-            kwargs["db_value"] = to_pickle(value)
+            kwargs.update(attribute_storage_fields(value))
             kwargs["db_strvalue"] = None
         new_attr = self._attrclass(**kwargs)
         new_attr.save()
@@ -1094,25 +1135,31 @@ class ModelAttributeBackend(IAttributeBackend):
 
     def do_update_attribute(self, attr, value, strvalue):
         if strvalue:
-            attr.value = None
+            storage_fields = attribute_storage_fields(None)
             attr.db_strvalue = value
         else:
-            attr.value = value
+            storage_fields = attribute_storage_fields(value)
             attr.db_strvalue = None
-        attr.save(update_fields=["db_strvalue", "db_value"])
+        for fieldname, fieldval in storage_fields.items():
+            setattr(attr, fieldname, fieldval)
+        attr.save(update_fields=["db_strvalue", *VALUE_STORAGE_FIELDS])
 
     def do_batch_update_attribute(self, attr_obj, category, lock_storage, new_value, strvalue):
         attr_obj.db_category = category
         attr_obj.db_lock_storage = lock_storage if lock_storage else ""
         if strvalue:
             # store as a simple string (will not notify OOB handlers)
+            storage_fields = attribute_storage_fields(None)
             attr_obj.db_strvalue = new_value
-            attr_obj.value = None
         else:
             # store normally (this will also notify OOB handlers)
-            attr_obj.value = new_value
+            storage_fields = attribute_storage_fields(new_value)
             attr_obj.db_strvalue = None
-        attr_obj.save(update_fields=["db_strvalue", "db_value", "db_category", "db_lock_storage"])
+        for fieldname, fieldval in storage_fields.items():
+            setattr(attr_obj, fieldname, fieldval)
+        attr_obj.save(
+            update_fields=["db_strvalue", "db_category", "db_lock_storage", *VALUE_STORAGE_FIELDS]
+        )
 
     def do_batch_create_attributes(self, attr_data_list):
         """
@@ -1134,10 +1181,10 @@ class ModelAttributeBackend(IAttributeBackend):
                 "db_attrtype": self._attrtype,
             }
             if strvalue:
-                kwargs["db_value"] = None
+                kwargs.update(attribute_storage_fields(None))
                 kwargs["db_strvalue"] = value
             else:
-                kwargs["db_value"] = to_pickle(value)
+                kwargs.update(attribute_storage_fields(value))
                 kwargs["db_strvalue"] = None
             objs.append(self._attrclass(**kwargs))
         created = self._attrclass.objects.bulk_create(objs)

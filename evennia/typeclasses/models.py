@@ -60,7 +60,13 @@ from evennia.typeclasses.tags import (
 )
 from evennia.utils.idmapper.models import SharedMemoryModel, SharedMemoryModelBase
 from evennia.utils.logger import log_trace
-from evennia.utils.utils import class_from_module, inherits_from, is_iter, lazy_property, make_iter
+from evennia.utils.utils import (
+    class_from_module,
+    inherits_from,
+    is_iter,
+    lazy_property,
+    make_iter,
+)
 
 __all__ = ("TypedObject",)
 
@@ -366,9 +372,9 @@ class TypedObject(SharedMemoryModel):
                 log_trace()
 
     # --- Creation configuration (override in subclasses) ---
-    _creation_hook_name = None          # "at_object_creation", "at_script_creation", etc.
-    _post_creation_hook_name = None     # "at_object_post_creation", etc.
-    _createdict_field_map = ()          # ((cdict_key, db_field), ...) or ((cdict_key, db_field, transform), ...)
+    _creation_hook_name = None  # "at_object_creation", "at_script_creation", etc.
+    _post_creation_hook_name = None  # "at_object_post_creation", etc.
+    _createdict_field_map = ()  # ((cdict_key, db_field), ...) or ((cdict_key, db_field, transform), ...)
 
     def _process_first_save(self):
         """Unified first-save orchestrator."""

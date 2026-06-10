@@ -19,8 +19,10 @@ be out of sync with the database.
 
 """
 
+import math
 from collections import OrderedDict, defaultdict, deque
 from collections.abc import MutableMapping, MutableSequence, MutableSet
+from datetime import date, datetime, time
 from functools import update_wrapper
 
 try:
@@ -32,13 +34,27 @@ from enum import IntFlag
 
 from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import ObjectDoesNotExist
+from django.db.models import Q
 from django.utils.safestring import SafeString
 
 import evennia
 from evennia.utils import logger
 from evennia.utils.utils import is_iter, to_bytes, uses_database
 
-__all__ = ("to_pickle", "from_pickle", "do_pickle", "do_unpickle", "dbserialize", "dbunserialize")
+__all__ = (
+    "to_pickle",
+    "from_pickle",
+    "do_pickle",
+    "do_unpickle",
+    "dbserialize",
+    "dbunserialize",
+    "to_jsonable",
+    "from_jsonable",
+    "NotJSONSerializable",
+    "attribute_storage_fields",
+    "storage_to_intermediate",
+    "attr_value_q",
+)
 
 PICKLE_PROTOCOL = 2
 
@@ -645,6 +661,271 @@ def unpack_session(item):
         # reused all the time).
         return session
     return None
+
+
+#
+# JSON storage codec
+#
+# Converts between the pickle-safe intermediate form produced by `to_pickle`
+# and pure-JSON structures storable in the Attribute's JSONField column
+# (jsonb on PostgreSQL). Types JSON cannot represent natively are wrapped in
+# reserved single-key sentinel dicts; values with no JSON representation at
+# all raise NotJSONSerializable so callers can fall back to pickle storage.
+
+JSON_DBOBJ = "__dbobj__"
+JSON_SESSION = "__session__"
+JSON_TUPLE = "__tuple__"
+JSON_SET = "__set__"
+JSON_FROZENSET = "__frozenset__"
+JSON_ODICT = "__odict__"
+JSON_DEQUE = "__deque__"
+JSON_DATETIME = "__datetime__"
+JSON_DATE = "__date__"
+JSON_TIME = "__time__"
+JSON_SENTINELS = frozenset(
+    (
+        JSON_DBOBJ,
+        JSON_SESSION,
+        JSON_TUPLE,
+        JSON_SET,
+        JSON_FROZENSET,
+        JSON_ODICT,
+        JSON_DEQUE,
+        JSON_DATETIME,
+        JSON_DATE,
+        JSON_TIME,
+    )
+)
+
+PICKLE_STORAGE_TYPE = "pickle"
+JSON_STORAGE_TYPE = "json"
+VALUE_STORAGE_FIELDS = ("db_value", "db_json", "db_storage_type")
+
+
+class NotJSONSerializable(Exception):
+    """
+    Raised when a value cannot be represented in Attribute JSON storage and
+    must be stored with pickle instead.
+
+    """
+
+
+def to_jsonable(data):
+    """
+    Convert the pickle-safe intermediate form produced by `to_pickle` into a
+    structure of pure JSON types, using reserved single-key sentinel dicts
+    for types JSON cannot represent natively (tuples, sets, datetimes,
+    packed dbobjects etc).
+
+    Args:
+        data (any): Output of `to_pickle`.
+
+    Returns:
+        any: A JSON-safe structure suitable for storing in a JSONField.
+
+    Raises:
+        NotJSONSerializable: If any part of the structure has no JSON
+            representation; the caller should fall back to pickle storage.
+
+    Notes:
+        All type checks are exact (`type(x) is ...`) - subclasses of builtins
+        (including `SafeString`) deliberately fall back to pickle since JSON
+        cannot preserve their class.
+
+    """
+
+    def process_key(key):
+        if type(key) is not str:
+            raise NotJSONSerializable(f"non-string dict key {key!r}")
+        if key in JSON_SENTINELS:
+            raise NotJSONSerializable(f"dict key {key!r} collides with a reserved sentinel")
+        if "\x00" in key:
+            raise NotJSONSerializable("dict key contains NUL byte")
+        return key
+
+    def process_item(item):
+        dtype = type(item)
+        if item is None or dtype is bool or dtype is int:
+            return item
+        if dtype is str:
+            if "\x00" in item:
+                # PostgreSQL rejects NUL bytes in jsonb strings
+                raise NotJSONSerializable("string contains NUL byte")
+            return item
+        if dtype is float:
+            if not math.isfinite(item):
+                # json.dumps would emit NaN/Infinity, which jsonb rejects
+                raise NotJSONSerializable("non-finite float")
+            return item
+        if _IS_PACKED_DBOBJ(item):
+            return {JSON_DBOBJ: [list(item[1]), item[2], item[3]]}
+        if _IS_PACKED_SESSION(item):
+            return {JSON_SESSION: [item[1], item[2]]}
+        if dtype is tuple:
+            return {JSON_TUPLE: [process_item(val) for val in item]}
+        if dtype is list:
+            return [process_item(val) for val in item]
+        if dtype is dict:
+            return {process_key(key): process_item(val) for key, val in item.items()}
+        if dtype is OrderedDict:
+            # jsonb does not preserve key order; store as a pair-list
+            return {
+                JSON_ODICT: [[process_key(key), process_item(val)] for key, val in item.items()]
+            }
+        if dtype is set:
+            return {JSON_SET: [process_item(val) for val in item]}
+        if dtype is frozenset:
+            return {JSON_FROZENSET: [process_item(val) for val in item]}
+        if dtype is deque:
+            return {JSON_DEQUE: [item.maxlen, [process_item(val) for val in item]]}
+        if dtype is datetime:
+            return {JSON_DATETIME: item.isoformat()}
+        if dtype is date:
+            return {JSON_DATE: item.isoformat()}
+        if dtype is time:
+            return {JSON_TIME: item.isoformat()}
+        # bytes, defaultdict (callable factory), builtin subclasses,
+        # custom classes etc have no JSON representation
+        raise NotJSONSerializable(f"type {dtype} is not JSON-storable")
+
+    return process_item(data)
+
+
+def from_jsonable(data):
+    """
+    Inverse of `to_jsonable` - rebuild the pickle-safe intermediate form
+    from a JSON storage structure. Feed the result to `from_pickle` to get
+    live data (resolved dbobjects, `_Saver*` wrappers etc).
+
+    Args:
+        data (any): JSON structure as read back from a JSONField.
+
+    Returns:
+        any: The intermediate form as originally produced by `to_pickle`.
+
+    """
+
+    def decode_sentinel(key, payload):
+        if key == JSON_DBOBJ:
+            # the natural key must be re-tupled - the model map is tuple-keyed
+            return ("__packed_dbobj__", tuple(payload[0]), payload[1], payload[2])
+        if key == JSON_SESSION:
+            return ("__packed_session__", payload[0], payload[1])
+        if key == JSON_TUPLE:
+            return tuple(process_item(val) for val in payload)
+        if key == JSON_SET:
+            return set(process_item(val) for val in payload)
+        if key == JSON_FROZENSET:
+            return frozenset(process_item(val) for val in payload)
+        if key == JSON_ODICT:
+            return OrderedDict((dkey, process_item(val)) for dkey, val in payload)
+        if key == JSON_DEQUE:
+            maxlen, items = payload
+            return deque((process_item(val) for val in items), maxlen=maxlen)
+        if key == JSON_DATETIME:
+            return datetime.fromisoformat(payload)
+        if key == JSON_DATE:
+            return date.fromisoformat(payload)
+        return time.fromisoformat(payload)
+
+    def process_item(item):
+        dtype = type(item)
+        if dtype is dict:
+            if len(item) == 1:
+                key = next(iter(item))
+                if key in JSON_SENTINELS:
+                    # the encoder guarantees user data never contains
+                    # reserved keys, so this is always a codec sentinel
+                    return decode_sentinel(key, item[key])
+            return {key: process_item(val) for key, val in item.items()}
+        if dtype is list:
+            return [process_item(val) for val in item]
+        return item
+
+    return process_item(data)
+
+
+def attribute_storage_fields(value):
+    """
+    Build the Attribute value-storage column assignments for a raw value.
+
+    This is the public API for code creating Attribute rows directly (e.g.
+    with `bulk_create`) - use `Attribute(db_key=..., **attribute_storage_fields(value))`
+    instead of assigning `db_value` so JSON-representable values land in the
+    queryable JSON column.
+
+    Args:
+        value (any): The raw (unserialized) value to store.
+
+    Returns:
+        dict: Assignments for the `db_value`, `db_json` and `db_storage_type`
+            fields.
+
+    """
+    if value is None:
+        # None stays on the pickle path (both columns SQL NULL): a JSONField
+        # exact=None lookup matches JSON null rather than SQL NULL, so storing
+        # None as json would make it unqueryable. This also matches legacy
+        # strvalue rows, which keep db_value=None.
+        return {"db_value": None, "db_json": None, "db_storage_type": PICKLE_STORAGE_TYPE}
+    intermediate = to_pickle(value)
+    try:
+        jsonable = to_jsonable(intermediate)
+    except NotJSONSerializable:
+        return {"db_value": intermediate, "db_json": None, "db_storage_type": PICKLE_STORAGE_TYPE}
+    return {"db_value": None, "db_json": jsonable, "db_storage_type": JSON_STORAGE_TYPE}
+
+
+def storage_to_intermediate(storage_type, db_value, db_json):
+    """
+    Convert raw Attribute storage columns to the pickle-intermediate form,
+    regardless of which column holds the value. Useful with
+    `values_list("db_value", "db_json", "db_storage_type")`-style raw reads.
+
+    Args:
+        storage_type (str): The `db_storage_type` column value.
+        db_value (any): The `db_value` column (already unpickled by the field).
+        db_json (any): The `db_json` column.
+
+    Returns:
+        any: The intermediate form; pass to `from_pickle` for live data.
+
+    """
+    if storage_type == JSON_STORAGE_TYPE:
+        return from_jsonable(db_json)
+    return db_value
+
+
+def attr_value_q(value, prefix=""):
+    """
+    Build a Q object matching an exact Attribute value in either storage
+    column (JSON or pickle).
+
+    Args:
+        value (any): The raw value to match (may contain dbobjects).
+        prefix (str, optional): Field path leading to the Attribute model,
+            e.g. "db_attributes" (from a typeclassed model) or "attribute"
+            (from an attribute through-model). Empty when querying the
+            Attribute model directly.
+
+    Returns:
+        django.db.models.Q: Matching either storage column when the value is
+            JSON-representable, else the pickle column only.
+
+    """
+    sep = f"{prefix}__" if prefix else ""
+    intermediate = to_pickle(value)
+    # the pickle leg compares against the stored blob; passing the
+    # intermediate (rather than the raw value) makes nested dbobjects
+    # compare correctly against rows written by the value setter
+    q = Q(**{f"{sep}db_value": intermediate})
+    if value is None:
+        return q
+    try:
+        q |= Q(**{f"{sep}db_json": to_jsonable(intermediate)})
+    except NotJSONSerializable:
+        pass
+    return q
 
 
 #

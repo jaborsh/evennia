@@ -435,11 +435,16 @@ def _on_monitor_change(**kwargs):
     # else then edits the object
 
     if session:
+        if fieldname == "db_value" and hasattr(obj, "serialized_value"):
+            # an Attribute - the value may live in either storage column
+            out_value = obj.serialized_value()
+        else:
+            out_value = _GA(obj, fieldname)
         callsign = {
             outputfunc_name: {
                 "name": name,
                 **({"category": category} if category is not None else {}),
-                "value": _GA(obj, fieldname),
+                "value": out_value,
             }
         }
         session.msg(**callsign)
