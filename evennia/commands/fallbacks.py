@@ -28,6 +28,8 @@ may return a Deferred. The cmdhandler acts on the result:
 
 """
 
+from django.conf import settings
+
 
 def get_exit_candidates(caller):
     """
@@ -78,11 +80,6 @@ def resolve_exits(caller, raw_string, cmdset, session=None, **kwargs):
         return None
     exit_obj.traverse(caller)
     return True
-
-
-# key of the default channel command; the bare-channel-name rewrite targets
-# it (the same coupling the old channel-nick replacement template had).
-CHANNEL_COMMAND_KEY = "@channel"
 
 
 def get_channel_candidates(caller):
@@ -137,8 +134,9 @@ def resolve_channels(caller, raw_string, cmdset, session=None, **kwargs):
     The first whitespace-bounded, case-insensitive match against the
     caller's subscribed channel keys/aliases and personal channel-nicks
     wins; on overlapping names the longest one is used. The rest of the
-    line is the message. A bare channel name is rewritten to the channel
-    command, which displays the channel info. A merged cmdset with
+    line is the message. A bare channel name is rewritten to the command
+    named by `settings.COMMAND_FALLBACK_CHANNEL_COMMAND` (the channel
+    command's info display by default). A merged cmdset with
     `no_channels=True` suppresses channel matching.
 
     To preserve the sender identity of the account-level channel command,
@@ -172,9 +170,9 @@ def resolve_channels(caller, raw_string, cmdset, session=None, **kwargs):
         return None
     message = raw_string.strip()[len(name) :].strip()
     if not message:
-        # bare channel name: defer to the channel command's info display
+        # bare channel name: defer to the configured channel command
         # (the dbref form is safe for multi-word channel keys)
-        return f"{CHANNEL_COMMAND_KEY} #{channel.id}"
+        return f"{settings.COMMAND_FALLBACK_CHANNEL_COMMAND} #{channel.id}"
     account = getattr(caller, "account", None)
     # subscriptions.has is a strict per-entity check (unlike has_connection,
     # which falls back to the puppet's account)

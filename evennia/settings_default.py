@@ -413,6 +413,10 @@ COMMAND_FALLBACK_RESOLVERS = [
     "evennia.commands.fallbacks.resolve_channels",
     "evennia.commands.fallbacks.resolve_nicks",
 ]
+# Command the channel fallback resolver rewrites a bare channel name to; the
+# rewritten input is "<this command> #<channel dbref>". The default targets
+# the channel command's info display.
+COMMAND_FALLBACK_CHANNEL_COMMAND = "@channel"
 # On a multi-match when searching objects or commands, the user has the
 # ability to search again with an index marker that differentiates
 # the results. If multiple "box" objects are found, they can by default

@@ -1836,6 +1836,15 @@ class TestCommandFallbackResolvers(TwistedTestCase, BaseEvenniaTest):
         )
         self.assertIn("testchan", self._msgs() + account_msgs)
 
+    def test_channel_bare_name_rewrite_target_setting(self):
+        # the bare-name rewrite target is configurable; pointing it at
+        # another command routes a bare channel name there
+        self.channel.connect(self.char1)
+        self.char1.cmdset.add(_CmdSetMarker())
+        with override_settings(COMMAND_FALLBACK_CHANNEL_COMMAND="marker"):
+            self.char1.execute_cmd("testchan")
+        self.assertIn("marker ran", self._msgs())
+
     def test_puppet_with_account_level_subscription(self):
         # default channels subscribe the account; sends from the puppet must
         # resolve and be attributed to the account
