@@ -15,7 +15,6 @@ from django.conf import settings
 from django.utils.translation import gettext as _
 
 import evennia
-from evennia.commands import cmdset
 from evennia.commands.cmdsethandler import CmdSetHandler
 from evennia.objects.manager import ObjectManager
 from evennia.objects.models import ObjectDB
@@ -43,7 +42,6 @@ _ScriptDB = None
 _CMDHANDLER = None
 
 _AT_SEARCH_RESULT = variable_from_module(*settings.SEARCH_AT_RESULT.rsplit(".", 1))
-_COMMAND_DEFAULT_CLASS = class_from_module(settings.COMMAND_DEFAULT_CLASS)
 # the sessid_max is based on the length of the db_sessid csv field (excluding commas)
 _SESSID_MAX = 16 if _MULTISESSION_MODE in (1, 3) else 1
 
@@ -945,8 +943,7 @@ class DefaultObject(ObjectDB, metaclass=TypeclassBase):
         """
         Do something as this object. This is never called normally,
         it's only used when wanting specifically to let an object be
-        the caller of a command. It makes use of nicks of eventual
-        connected accounts as well.
+        the caller of a command.
 
         Args:
             raw_string (string): Raw command input
@@ -976,11 +973,6 @@ class DefaultObject(ObjectDB, metaclass=TypeclassBase):
         if not _CMDHANDLER:
             from evennia.commands.cmdhandler import cmdhandler as _CMDHANDLER
 
-        # nick replacement - we require full-word matching.
-        # do text encoding conversion
-        raw_string = self.nicks.nickreplace(
-            raw_string, categories=("inputline", "channel"), include_account=True
-        )
         return _CMDHANDLER(self, raw_string, callertype="object", session=session, **kwargs)
 
     def msg(self, text=None, from_obj=None, session=None, options=None, **kwargs):
@@ -3430,58 +3422,6 @@ class DefaultRoom(DefaultObject):
 #
 
 
-class ExitCommand(_COMMAND_DEFAULT_CLASS):
-    """
-    This is a command that simply cause the caller to traverse
-    the object it is attached to.
-
-    """
-
-    obj = None
-
-    def func(self):
-        """
-        Default exit traverse if no syscommand is defined.
-        """
-
-        if self.obj.access(self.caller, "traverse"):
-            # we may traverse the exit.
-            self.obj.at_traverse(self.caller, self.obj.destination)
-            SIGNAL_EXIT_TRAVERSED.send(sender=self.obj, traverser=self.caller)
-        else:
-            # exit is locked
-            if self.obj.db.err_traverse:
-                # if exit has a better error message, let's use it.
-                self.caller.msg(self.obj.db.err_traverse)
-            else:
-                # No shorthand error message. Call hook.
-                self.obj.at_failed_traverse(self.caller)
-
-    def get_display_name(self, looker=None, **kwargs):
-        return self.obj.get_display_name(looker, **kwargs)
-
-    def get_extra_info(self, caller, **kwargs):
-        """
-        Shows a bit of information on where the exit leads.
-
-        Args:
-            caller (DefaultObject): The object (usually a character) that entered an ambiguous command.
-            **kwargs (dict): Arbitrary, optional arguments for users
-                overriding the call (unused by default).
-
-        Returns:
-            str: A string with identifying information to disambiguate the command, conventionally
-            with a preceding space.
-
-        """
-        if self.obj.destination:
-            return _(" (exit to {destination})").format(
-                destination=self.obj.destination.get_display_name(caller, **kwargs)
-            )
-        else:
-            return _(" (exit)")
-
-
 #
 # Base Exit object
 
@@ -3489,61 +3429,21 @@ class ExitCommand(_COMMAND_DEFAULT_CLASS):
 class DefaultExit(DefaultObject):
     """
     This is the base exit object - it connects a location to another.
-    This is done by the exit assigning a "command" on itself with the
-    same name as the exit object (to do this we need to remember to
-    re-create the command when the object is cached since it must be
-    created dynamically depending on what the exit is called). This
-    command (which has a high priority) will thus allow us to traverse
-    exits simply by giving the exit-object's name on its own.
+
+    Exits are not commands. The command handler resolves them as a fallback:
+    when input matches no command, the exit fallback resolver (see
+    `evennia.commands.fallbacks`) matches it against the keys and aliases of
+    the exits at the caller's location and calls `traverse()` on the match.
+    Override `traverse` to change how traversal is initiated, or the
+    `at_traverse`/`at_failed_traverse`/`at_post_traverse` hooks for the
+    movement logic itself.
 
     """
 
     _content_types = ("exit",)
-    exit_command = ExitCommand
-    priority = 101
 
     # Used by get_display_desc when self.db.desc is None
     default_description = _("This is an exit.")
-
-    # Helper classes and methods to implement the Exit. These need not
-    # be overloaded unless one want to change the foundation for how
-    # Exits work. See the end of the class for hook methods to overload.
-
-    def create_exit_cmdset(self, exidbobj):
-        """
-        Helper function for creating an exit command set + command.
-
-        The command of this cmdset has the same name as the Exit
-        object and allows the exit to react when the account enter the
-        exit's name, triggering the movement between rooms.
-
-        Args:
-            exidbobj (DefaultObject): The DefaultExit object to base the command on.
-
-        """
-
-        # create an exit command. We give the properties here,
-        # to always trigger metaclass preparations
-        cmd = self.exit_command(
-            key=exidbobj.db_key.strip().lower(),
-            aliases=exidbobj.aliases.all(),
-            locks=str(exidbobj.locks),
-            auto_help=False,
-            destination=exidbobj.db_destination,
-            arg_regex=r"^$",
-            is_exit=True,
-            obj=exidbobj,
-        )
-        # create a cmdset
-        exit_cmdset = cmdset.CmdSet(None)
-        exit_cmdset.key = "ExitCmdSet"
-        exit_cmdset.priority = self.priority
-        exit_cmdset.duplicates = True
-        # add command to cmdset
-        exit_cmdset.add(cmd)
-        return exit_cmdset
-
-    # Command hooks
 
     @classmethod
     def create(
@@ -3656,39 +3556,38 @@ class DefaultExit(DefaultObject):
         if self.location and not self.destination:
             self.destination = self.location
 
-    def at_cmdset_get(self, **kwargs):
+    def traverse(self, traversing_object, **kwargs):
         """
-        Called just before cmdsets on this object are requested by the
-        command handler. If changes need to be done on the fly to the
-        cmdset before passing them on to the cmdhandler, this is the
-        place to do it. This is called also if the object currently
-        has no cmdsets.
+        Public entry point for traversing this exit. This is what the exit
+        fallback resolver calls when input matches this exit's key or an
+        alias (replacing the dynamically created exit command of old).
 
-        Keyword Args:
-            caller (DefaultObject, DefaultAccount or Session): The object requesting the cmdsets.
-            current (CmdSet): The current merged cmdset.
-            force_init (bool): If `True`, force a re-build of the cmdset
-                (for example to update aliases).
+        Checks the 'traverse' lock; on success calls `at_traverse` and fires
+        SIGNAL_EXIT_TRAVERSED. On lock failure, messages `db.err_traverse`
+        if set, otherwise calls `at_failed_traverse`.
 
-        """
-
-        if "force_init" in kwargs or not self.cmdset.has_cmdset("ExitCmdSet", must_be_default=True):
-            # we are resetting, or no exit-cmdset was set. Create one dynamically.
-            self.cmdset.add_default(self.create_exit_cmdset(self), persistent=False)
-
-    def at_init(self):
-        """
-        This is called when this objects is re-loaded from cache. When
-        that happens, we make sure to remove any old ExitCmdSet cmdset
-        (this most commonly occurs when renaming an existing exit)
+        Args:
+            traversing_object (DefaultObject): Object attempting traversal.
+            **kwargs (dict): Passed into `at_traverse`/`at_failed_traverse`.
 
         """
-        self.cmdset.remove_default()
+        if self.access(traversing_object, "traverse"):
+            # we may traverse the exit.
+            self.at_traverse(traversing_object, self.destination, **kwargs)
+            SIGNAL_EXIT_TRAVERSED.send(sender=self, traverser=traversing_object)
+        else:
+            # exit is locked
+            if self.db.err_traverse:
+                # if exit has a better error message, let's use it.
+                traversing_object.msg(self.db.err_traverse)
+            else:
+                # No shorthand error message. Call hook.
+                self.at_failed_traverse(traversing_object, **kwargs)
 
     def at_traverse(self, traversing_object, target_location, **kwargs):
         """
         This implements the actual traversal. The traverse lock has
-        already been checked (in the Exit command) at this point.
+        already been checked (in `traverse`) at this point.
 
         Args:
             traversing_object (DefaultObject): Object traversing us.

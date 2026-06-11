@@ -6,8 +6,8 @@ command line. The processing of a command works as follows:
 
 1. The calling object (caller) is analyzed based on its callertype.
 2. Cmdsets are gathered from different sources:
-   - object cmdsets: all objects at caller's location are scanned for non-empty
-     cmdsets. This includes cmdsets on exits.
+   - object cmdsets: all non-exit objects at caller's location are scanned
+     for non-empty cmdsets. Exits are not commands and contribute nothing.
    - caller: the caller is searched for its own currently active cmdset.
    - account: lastly the cmdsets defined on caller.account are added.
 3. The collected cmdsets are merged together to a combined, current cmdset.
@@ -17,8 +17,13 @@ command line. The processing of a command works as follows:
    input string for possible command matches.
 6. If multiple matches are found -> check for CMD_MULTIMATCH in current
    cmdset, or fallback to error message. Exit.
-7. If no match was found -> check for CMD_NOMATCH in current cmdset or
-   fallback to error message. Exit.
+7. If no match was found -> check for CMD_NOMATCH in current cmdset (which,
+   if defined, captures the input - this is how EvMenu/EvEditor read free
+   text). Otherwise the COMMAND_FALLBACK_RESOLVERS run in order: exits at the
+   caller's location are matched by name and traversed, channels the caller
+   subscribes to are matched and sent to, then nick/alias replacement is
+   tried (a successful rewrite re-runs the parse once). If nothing resolves,
+   fall back to the no-match error message. Exit.
 8. At this point we have found a normal command. We assign useful variables to it that
    will be available to the command coder at run-time.
 9. We have a unique cmdobject, primed for use. Call all hooks:
@@ -38,7 +43,7 @@ from twisted.internet import reactor
 from twisted.internet.defer import inlineCallbacks
 from twisted.internet.task import deferLater
 
-from evennia.commands import cmdsetcache
+from evennia.commands import cmdsetcache, fallbacks
 from evennia.commands.cmdset import CmdSet
 from evennia.commands.command import InterruptCommand
 from evennia.utils import logger, utils
@@ -82,6 +87,23 @@ _COMMAND_RECURSION_LIMIT = 10
 # This decides which command parser is to be used.
 # You have to restart the server for changes to take effect.
 _COMMAND_PARSER = utils.variable_from_module(*settings.COMMAND_PARSER.rsplit(".", 1))
+
+# Resolvers tried in order when the input matches no command and the merged
+# cmdset defines no custom CMD_NOMATCH system command (see
+# evennia.commands.fallbacks). Restart for changes to take effect. The
+# getattr default covers settings files predating the setting.
+_COMMAND_FALLBACK_RESOLVERS = [
+    utils.variable_from_module(*path.rsplit(".", 1))
+    for path in getattr(
+        settings,
+        "COMMAND_FALLBACK_RESOLVERS",
+        [
+            "evennia.commands.fallbacks.resolve_exits",
+            "evennia.commands.fallbacks.resolve_channels",
+            "evennia.commands.fallbacks.resolve_nicks",
+        ],
+    )
+]
 
 # System command names - import these variables rather than trying to
 # remember the actual string constants. If not defined, Evennia
@@ -363,6 +385,10 @@ def get_and_merge_cmdsets(
             re-evaluated per input - recorded even when their call lock
             currently fails, since it may pass on a later input.
 
+            Exits never contribute cmdsets - not even manually added ones.
+            They are resolved by name in the fallback-resolver step instead
+            (see evennia.commands.fallbacks).
+
             """
             # Gather cmdsets from location, objects in location or carried
             try:
@@ -378,7 +404,11 @@ def get_and_merge_cmdsets(
                     local_objlist = yield (
                         location.contents_get(exclude=obj) + obj.contents_get() + [location]
                     )
-                    local_objlist = [o for o in local_objlist if not o._is_deleted]
+                    local_objlist = [
+                        o
+                        for o in local_objlist
+                        if not o._is_deleted and "exit" not in o._content_types
+                    ]
                     # the call-type lock is checked here, it makes sure an account
                     # is not seeing e.g. the commands on a fellow account (which is why
                     # the no_superuser_bypass must be True)
@@ -424,11 +454,11 @@ def get_and_merge_cmdsets(
                 raise ErrorReported(raw_string)
 
         @inlineCallbacks
-        def _get_dynamic_obj_cmdsets(obj, no_exits):
+        def _get_dynamic_obj_cmdsets(obj):
             """
             Helper method; Re-evaluate a `cmdset_dynamic` local object's
             contribution on the cached path: call lock, `at_cmdset_get` hook
-            and current stack, with the cached gather's no_exits gate applied.
+            and current stack.
 
             """
             try:
@@ -443,8 +473,6 @@ def get_and_merge_cmdsets(
                 if not obj.cmdset.current:
                     return []
                 dyn_cmdsets = yield list(obj.cmdset.cmdset_stack)
-                if no_exits:
-                    dyn_cmdsets = [cmdset for cmdset in dyn_cmdsets if cmdset.key != "ExitCmdSet"]
                 return dyn_cmdsets
             except Exception:
                 _msg_err(caller, _ERROR_CMDSETS)
@@ -552,7 +580,7 @@ def get_and_merge_cmdsets(
                         _add_local(payload)
                     else:
                         # ("dynamic", obj)
-                        dyn_cmdsets = yield _get_dynamic_obj_cmdsets(payload, cached.no_exits)
+                        dyn_cmdsets = yield _get_dynamic_obj_cmdsets(payload)
                         _add_local(dyn_cmdsets)
                 cmdset = yield _weed_and_merge(object_cmdsets)
             finally:
@@ -586,7 +614,7 @@ def get_and_merge_cmdsets(
             cacheable = not any(cmdsetcache.is_dynamic(provider) for provider in cmdset_providers)
 
         local_obj_cmdsets = []
-        gate_no_objs = gate_no_exits = None
+        gate_no_objs = None
 
         current_cmdset = CmdSet()
         object_cmdsets = list()
@@ -601,30 +629,13 @@ def get_and_merge_cmdsets(
             match cmdobj.cmdset_provider_type:
                 case "object":
                     gate_no_objs = current.no_objs
-                    gate_no_exits = current.no_exits
                     if not current.no_objs:
                         local_obj_cmdsets, local_segments = yield _get_local_obj_cmdsets(cmdobj)
-                        if current.no_exits:
-                            # filter out all exits
-                            local_obj_cmdsets = [
-                                cmdset for cmdset in local_obj_cmdsets if cmdset.key != "ExitCmdSet"
-                            ]
                         object_cmdsets += local_obj_cmdsets
                         if use_gather_cache:
                             for kind, payload in local_segments:
                                 if kind == "dynamic":
                                     segments.append((kind, payload))
-                                elif current.no_exits:
-                                    segments.append(
-                                        (
-                                            kind,
-                                            tuple(
-                                                cmdset
-                                                for cmdset in payload
-                                                if cmdset.key != "ExitCmdSet"
-                                            ),
-                                        )
-                                    )
                                 else:
                                     segments.append((kind, tuple(payload)))
 
@@ -664,7 +675,6 @@ def get_and_merge_cmdsets(
                         start_vector,
                         tuple(segments),
                         no_objs=gate_no_objs,
-                        no_exits=gate_no_exits,
                     ),
                 )
 
@@ -880,17 +890,70 @@ def cmdhandler(
                 # Parse the input string and match to available cmdset.
                 # This also checks for permissions, so all commands in match
                 # are commands the caller is allowed to call.
-                try:
-                    matches = yield _COMMAND_PARSER(raw_string, cmdset, caller, session=session)
-                except TypeError:
-                    logger.log_dep(
-                        "Custom cmdparser does not accept 'session' kwarg. "
-                        "Update its signature to cmdparser(raw_string, cmdset, caller, "
-                        "match_index=None, session=None, **kwargs). "
-                        "Session-aware lock functions like is_ooc() will not "
-                        "work correctly until this is fixed."
-                    )
-                    matches = yield _COMMAND_PARSER(raw_string, cmdset, caller)
+                original_string = raw_string
+                rewrites_left = 1
+                while True:
+                    try:
+                        matches = yield _COMMAND_PARSER(raw_string, cmdset, caller, session=session)
+                    except TypeError:
+                        logger.log_dep(
+                            "Custom cmdparser does not accept 'session' kwarg. "
+                            "Update its signature to cmdparser(raw_string, cmdset, caller, "
+                            "match_index=None, session=None, **kwargs). "
+                            "Session-aware lock functions like is_ooc() will not "
+                            "work correctly until this is fixed."
+                        )
+                        matches = yield _COMMAND_PARSER(raw_string, cmdset, caller)
+                    if matches:
+                        break
+
+                    # No commands match. Try the fallback resolvers (exits,
+                    # channels, nicks) - unless a custom CMD_NOMATCH command
+                    # captures free input (EvMenu, EvEditor, EvMore,
+                    # get_input), which takes precedence.
+                    syscmd = yield cmdset.get(CMD_NOMATCH)
+                    rewritten = None
+                    if not syscmd:
+                        for resolver in _COMMAND_FALLBACK_RESOLVERS:
+                            result = yield resolver(
+                                caller, raw_string, cmdset, session=session, callertype=callertype
+                            )
+                            if result is True:
+                                # input was consumed (e.g. an exit traversed)
+                                return
+                            if isinstance(result, str) and result.strip() != raw_string:
+                                rewritten = result.strip()
+                                break
+                    if rewritten and rewrites_left:
+                        rewrites_left -= 1
+                        unformatted_raw_string = rewritten
+                        raw_string = rewritten
+                        continue
+
+                    # Final no-match - report against the original input.
+                    if syscmd:
+                        sysarg = raw_string
+                    else:
+                        sysarg = _("Command '{command}' is not available.").format(
+                            command=original_string
+                        )
+                        suggestions = string_suggestions(
+                            original_string,
+                            cmdset.get_all_cmd_keys_and_aliases(caller)
+                            + list(fallbacks.get_exit_candidates(caller))
+                            + list(fallbacks.get_channel_candidates(caller)),
+                            cutoff=0.7,
+                            maxnum=3,
+                        )
+                        if suggestions:
+                            sysarg += _(" Maybe you meant {command}?").format(
+                                command=utils.list_to_string(
+                                    suggestions, endsep=_("or"), addquote=True
+                                )
+                            )
+                        else:
+                            sysarg += _(' Type "help" for help.')
+                    raise ExecSystemCommand(syscmd, sysarg)
 
                 # Deal with matches
 
@@ -908,38 +971,9 @@ def cmdhandler(
                         )
                     raise ExecSystemCommand(syscmd, sysarg)
 
-                cmdname, args, cmd, raw_cmdname = "", "", None, ""
-                if len(matches) == 1:
-                    # We have a unique command match. But it may still be invalid.
-                    match = matches[0]
-                    cmdname, args, cmd, raw_cmdname = (match[0], match[1], match[2], match[5])
-
-                if not matches:
-                    # No commands match our entered command
-                    syscmd = yield cmdset.get(CMD_NOMATCH)
-                    if syscmd:
-                        # use custom CMD_NOMATCH command
-                        sysarg = raw_string
-                    else:
-                        # fallback to default error text
-                        sysarg = _("Command '{command}' is not available.").format(
-                            command=raw_string
-                        )
-                        suggestions = string_suggestions(
-                            raw_string,
-                            cmdset.get_all_cmd_keys_and_aliases(caller),
-                            cutoff=0.7,
-                            maxnum=3,
-                        )
-                        if suggestions:
-                            sysarg += _(" Maybe you meant {command}?").format(
-                                command=utils.list_to_string(
-                                    suggestions, endsep=_("or"), addquote=True
-                                )
-                            )
-                        else:
-                            sysarg += _(' Type "help" for help.')
-                    raise ExecSystemCommand(syscmd, sysarg)
+                # We have a unique command match. But it may still be invalid.
+                match = matches[0]
+                cmdname, args, cmd, raw_cmdname = (match[0], match[1], match[2], match[5])
 
             if not cmd.retain_instance:
                 # making a copy allows multiple users to share the command also when yield is used

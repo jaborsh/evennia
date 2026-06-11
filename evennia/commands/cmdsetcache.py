@@ -193,9 +193,9 @@ class CachedGather:
 
     """
 
-    __slots__ = ("epoch", "providers", "location", "vector", "segments", "no_objs", "no_exits")
+    __slots__ = ("epoch", "providers", "location", "vector", "segments", "no_objs")
 
-    def __init__(self, epoch, providers, location, vector, segments, no_objs=None, no_exits=None):
+    def __init__(self, epoch, providers, location, vector, segments, no_objs=None):
         """
         Initialize the cached gather.
 
@@ -209,8 +209,6 @@ class CachedGather:
             segments (tuple): Ordered gather segments (see class docstring).
             no_objs (bool or None): The object-provider's `no_objs` gate value
                 recorded at build time.
-            no_exits (bool or None): The object-provider's `no_exits` gate
-                value recorded at build time.
 
         """
         self.epoch = epoch
@@ -219,7 +217,6 @@ class CachedGather:
         self.vector = vector
         self.segments = segments
         self.no_objs = no_objs
-        self.no_exits = no_exits
 
 
 def _cache_key(providers):

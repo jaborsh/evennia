@@ -1,3 +1,5 @@
+from unittest.mock import MagicMock
+
 from evennia.objects.models import ObjectDB
 from evennia.objects.objects import (
     DefaultCharacter,
@@ -498,31 +500,30 @@ class TestContentHandler(BaseEvenniaTest):
         self.assertEqual(self.room2.contents, [self.obj1, self.obj2])
 
 
-class TestExitCommand(BaseEvenniaTest):
-    """Test the ExitCommand class."""
+class TestExitTraverse(BaseEvenniaTest):
+    """Test the DefaultExit.traverse entry point."""
 
-    def _get_exit_cmd(self):
-        """Create an ExitCommand from the test exit object."""
-        cmdset = self.exit.create_exit_cmdset(self.exit)
-        return [cmd for cmd in cmdset.commands if cmd.key == "out"][0]
+    def test_traverse(self):
+        """Traversing should move the traverser to the destination."""
+        self.exit.traverse(self.char1)
+        self.assertEqual(self.char1.location, self.room2)
 
-    def test_get_display_name(self):
-        """ExitCommand.get_display_name should delegate to the exit object."""
-        cmd = self._get_exit_cmd()
-        self.assertEqual(cmd.get_display_name(self.char1), "out")
+    def test_traverse_locked_err_traverse(self):
+        """A locked exit with db.err_traverse should message it and not move."""
+        self.exit.locks.add("traverse:false()")
+        self.exit.db.err_traverse = "The door is barred."
+        self.char1.msg = MagicMock()
+        self.exit.traverse(self.char1)
+        self.assertEqual(self.char1.location, self.room1)
+        self.char1.msg.assert_called_with("The door is barred.")
 
-    def test_get_extra_info_with_destination(self):
-        """ExitCommand.get_extra_info should show destination."""
-        cmd = self._get_exit_cmd()
-        info = cmd.get_extra_info(self.char1)
-        self.assertIn("Room2", info)
-
-    def test_get_extra_info_no_destination(self):
-        """ExitCommand.get_extra_info should return '(exit)' with no destination."""
-        self.exit.destination = None
-        cmd = self._get_exit_cmd()
-        info = cmd.get_extra_info(self.char1)
-        self.assertIn("exit", info)
+    def test_traverse_locked_failed_traverse_hook(self):
+        """A locked exit without err_traverse should call at_failed_traverse."""
+        self.exit.locks.add("traverse:false()")
+        self.char1.msg = MagicMock()
+        self.exit.traverse(self.char1)
+        self.assertEqual(self.char1.location, self.room1)
+        self.char1.msg.assert_called_with("You cannot go there.")
 
 
 class SubAttributeProperty(AttributeProperty):

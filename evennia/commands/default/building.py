@@ -347,9 +347,6 @@ class CmdSetObjAlias(COMMAND_DEFAULT_CLASS):
         # save back to object.
         obj.aliases.add(aliases, category=category)
 
-        # we need to trigger this here, since this will force
-        # (default) Exits to rebuild their Exit commands with the new
-        # aliases
         obj.at_cmdset_get(force_init=True)
 
         # report all aliases on the object
@@ -1529,9 +1526,6 @@ class CmdName(ObjManipCommand):
         if aliases:
             [obj.aliases.add(alias) for alias in aliases]
             astring = " (%s)" % ", ".join(aliases)
-        # fix for exits - we need their exit-command to change name too
-        if obj.destination:
-            obj.flush_from_cache(force=True)
         caller.msg(f"Object's name changed to '{newname}'{astring}.")
 
 

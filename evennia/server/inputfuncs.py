@@ -92,15 +92,6 @@ def text(session, *args, **kwargs):
 
     txt = _maybe_strip_incoming_mxp(txt)
 
-    if session.account:
-        # nick replacement
-        puppet = session.puppet
-        if puppet:
-            txt = puppet.nicks.nickreplace(txt, categories=("inputline"), include_account=True)
-        else:
-            txt = session.account.nicks.nickreplace(
-                txt, categories=("inputline"), include_account=False
-            )
     kwargs.pop("options", None)
     cmdhandler(session, txt, callertype="session", session=session, **kwargs)
     session.update_session_counters()

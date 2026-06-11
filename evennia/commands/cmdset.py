@@ -143,12 +143,14 @@ class CmdSet(object, metaclass=_CmdSetMeta):
 
     no_objs  - don't include any commands from nearby objects
                   when searching for suitable commands
-    no_exits  - ignore the names of exits when matching against
-                        commands
-    no_channels   - ignore the name of channels when matching against
-                        commands (WARNING- this is dangerous since the
-                        account can then not even ask staff for help if
-                        something goes wrong)
+    no_exits  - suppress matching of exit names by the exit
+                        fallback resolver (exits are not commands; see
+                        evennia.commands.fallbacks)
+    no_channels   - suppress matching of channel names by the channel
+                        fallback resolver (channels are not commands; see
+                        evennia.commands.fallbacks). WARNING - this is
+                        dangerous since the account can then not even ask
+                        staff for help if something goes wrong
 
 
     """
@@ -236,8 +238,7 @@ class CmdSet(object, metaclass=_CmdSetMeta):
 
         The fingerprint includes `cmd.obj` and `self.cmdsetobj` (the object this
         cmdset sits on) so that two structurally identical cmdsets on different
-        game objects (e.g. ExitCmdSets with north/south in different rooms) are
-        correctly distinguished. These must be hashable — Evennia's TypedObject
+        game objects are correctly distinguished. These must be hashable — Evennia's TypedObject
         (Django model with integer PK) satisfies this; an unhashable obj here
         would indicate a deeper problem.
 

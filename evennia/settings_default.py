@@ -401,6 +401,18 @@ WEBCLIENT_OPTIONS = {
 # The command parser module to use. See the default module for which
 # functions it must implement
 COMMAND_PARSER = "evennia.commands.cmdparser.cmdparser"
+# Fallback resolvers tried in order when the input matches no command and the
+# merged cmdset defines no custom CMD_NOMATCH system command (a game-wide
+# custom CMD_NOMATCH disables them). This is how exits, channels and
+# nick/alias replacement are resolved - commands shadow exits, exits shadow
+# channels, channels shadow nicks. Each entry is the python-path to a
+# callable; see evennia.commands.fallbacks for the resolver contract.
+# Requires a server restart to change.
+COMMAND_FALLBACK_RESOLVERS = [
+    "evennia.commands.fallbacks.resolve_exits",
+    "evennia.commands.fallbacks.resolve_channels",
+    "evennia.commands.fallbacks.resolve_nicks",
+]
 # On a multi-match when searching objects or commands, the user has the
 # ability to search again with an index marker that differentiates
 # the results. If multiple "box" objects are found, they can by default

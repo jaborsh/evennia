@@ -3,7 +3,7 @@ Unit testing for the Command system itself.
 
 """
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from django.test import override_settings
 
@@ -1035,7 +1035,8 @@ import sys
 from twisted.trial.unittest import TestCase as TwistedTestCase
 
 import evennia
-from evennia.commands import cmdhandler
+from evennia.commands import cmdhandler, fallbacks
+from evennia.comms.comms import DefaultChannel
 from evennia.server.sessionhandler import ServerSessionHandler
 from evennia.utils.idmapper.models import flush_cache as idmapper_flush_cache
 
@@ -1742,8 +1743,9 @@ class _GatherCacheTestMixin:
         return self._gather(caller, providers)
 
     def _keys(self, merged):
-        """Get the command keys of a merged cmdset."""
-        return [cmd.key for cmd in merged.commands]
+        """Get the command keys of a merged cmdset (empty when the gather
+        found no cmdsets at all, which merges to None)."""
+        return [cmd.key for cmd in merged.commands] if merged else []
 
 
 class TestCmdsetGatherCache(_GatherCacheTestMixin, TwistedTestCase, BaseEvenniaTest):
@@ -1770,29 +1772,23 @@ class TestCmdsetGatherCache(_GatherCacheTestMixin, TwistedTestCase, BaseEvenniaT
     def test_own_cmdset_change_immediately_visible(self):
         self._prime(self.obj1)
         self.obj1.cmdset.add(_CmdSetA())
-        merged = self._gather(self.obj1)
-        self.assertIn("a", [cmd.key for cmd in merged.commands])
+        self.assertIn("a", self._keys(self._gather(self.obj1)))
         self.obj1.cmdset.remove(_CmdSetA)
-        merged = self._gather(self.obj1)
-        self.assertNotIn("a", [cmd.key for cmd in merged.commands])
+        self.assertNotIn("a", self._keys(self._gather(self.obj1)))
 
     def test_neighbor_cmdset_change_invalidates(self):
         self._prime(self.obj1)
         self.obj2.cmdset.add(_CmdSetB())
-        merged = self._gather(self.obj1)
-        self.assertIn("b", [cmd.key for cmd in merged.commands])
+        self.assertIn("b", self._keys(self._gather(self.obj1)))
         self.obj2.cmdset.remove(_CmdSetB)
-        merged = self._gather(self.obj1)
-        self.assertNotIn("b", [cmd.key for cmd in merged.commands])
+        self.assertNotIn("b", self._keys(self._gather(self.obj1)))
 
     def test_neighbor_move_invalidates(self):
         self.obj2.cmdset.add(_CmdSetB())
         self._prime(self.obj1)
-        merged = self._gather(self.obj1)
-        self.assertIn("b", [cmd.key for cmd in merged.commands])
+        self.assertIn("b", self._keys(self._gather(self.obj1)))
         self.obj2.location = self.room2
-        merged = self._gather(self.obj1)
-        self.assertNotIn("b", [cmd.key for cmd in merged.commands])
+        self.assertNotIn("b", self._keys(self._gather(self.obj1)))
 
     def test_live_cmdset_mutation_needs_no_event(self):
         # mutating a stacked CmdSet directly fires no engine event; it must
@@ -1907,24 +1903,12 @@ class TestCmdsetGatherCacheInvalidation(_GatherCacheTestMixin, TwistedTestCase, 
         self.obj2.flush_from_cache(force=True)
         self.assertIsNone(cmdsetcache.get_cached(self.obj1, [self.obj1]))
 
-    def test_exit_rename_via_flush_rebuilds(self):
-        # the @name command pattern for exits: rename, then force-flush
-        self._prime(self.char1)
-        self.assertIn("out", self._keys(self._gather(self.char1)))
-        self.exit.key = "north"
-        self.exit.flush_from_cache(force=True)
-        merged = self._gather(self.char1)
-        self.assertIn("north", self._keys(merged))
+    def test_exits_contribute_no_commands(self):
+        # exits are not commands; neither the build pass nor the cached
+        # path may include them in the merged cmdset
+        merged = self._prime(self.char1)
         self.assertNotIn("out", self._keys(merged))
-
-    def test_exit_alias_rebuilds(self):
-        # the @alias command pattern for exits: add alias, force_init rebuild
-        self._prime(self.char1)
-        self.exit.aliases.add("n")
-        self.exit.at_cmdset_get(force_init=True)
-        merged = self._gather(self.char1)
-        exit_cmd = [cmd for cmd in merged.commands if cmd.key == "out"][0]
-        self.assertIn("n", exit_cmd.aliases)
+        self.assertNotIn("out", self._keys(self._gather(self.char1)))
 
     def test_flush_cache_bumps_epoch(self):
         self._prime(self.obj1)
@@ -1955,6 +1939,11 @@ class TestCmdsetGatherCacheInvalidation(_GatherCacheTestMixin, TwistedTestCase, 
 class _CmdSetNoExits(CmdSet):
     key = "NoExits"
     no_exits = True
+
+
+class _CmdSetNoChannels(CmdSet):
+    key = "NoChannels"
+    no_channels = True
 
 
 class _CmdSetNoObjs(CmdSet):
@@ -2001,17 +1990,12 @@ class TestCmdsetGatherCacheDynamic(_GatherCacheTestMixin, TwistedTestCase, BaseE
         self.assertNotIn("b", self._keys(self._gather(self.obj1)))
         self.assertEqual(len(static_calls), 0, "attribute write triggered a full rebuild")
 
-    def test_no_exits_gate_applies_to_dynamic(self):
+    def test_exit_excluded_even_if_dynamic(self):
+        # exits never contribute cmdsets, even when marked cmdset_dynamic
         self.exit.cmdset_dynamic = True
-        self._prime(self.obj1)
+        merged = self._prime(self.obj1)
         self.assertIsNotNone(cmdsetcache.get_cached(self.obj1, [self.obj1]))
-        # the dynamic exit contributes its command on the cached path
-        self.assertIn("out", self._keys(self._gather(self.obj1)))
-        self.obj1.cmdset.add(_CmdSetNoExits())
-        # rebuild path honors the gate ...
-        self.assertNotIn("out", self._keys(self._gather(self.obj1)))
-        self.assertIsNotNone(cmdsetcache.get_cached(self.obj1, [self.obj1]))
-        # ... and so does the per-input dynamic splice on the cached path
+        self.assertNotIn("out", self._keys(merged))
         self.assertNotIn("out", self._keys(self._gather(self.obj1)))
 
     def test_dynamic_provider_falls_back_to_legacy(self):
@@ -2120,10 +2104,304 @@ class TestCmdsetGatherCacheParity(_GatherCacheTestMixin, TwistedTestCase, BaseEv
         # splice and the legacy walk must agree all the same
         self.char1.attributes.add("clearance", "yes")
         self._assert_parity(self.char1, providers, "attr flips dynamic lock without event")
-        self.char1.cmdset.add(_CmdSetNoExits())
-        self._assert_parity(self.char1, providers, "no_exits gate raised")
-        self.char1.cmdset.remove(_CmdSetNoExits)
         self.char1.cmdset.add(_CmdSetNoObjs())
         self._assert_parity(self.char1, providers, "no_objs gate raised")
         self.char1.cmdset.remove(_CmdSetNoObjs)
         self._assert_parity(self.char1, providers, "gates lowered")
+
+
+class _CmdMarker(Command):
+    key = "marker"
+
+    def func(self):
+        self.caller.msg("marker ran")
+
+
+class _CmdOut(Command):
+    key = "out"
+
+    def func(self):
+        self.caller.msg("out-command ran")
+
+
+class _CmdNoMatchCapture(Command):
+    key = cmdhandler.CMD_NOMATCH
+
+    def func(self):
+        self.caller.msg(f"captured {self.args}")
+
+
+class _CmdSetMarker(CmdSet):
+    key = "MarkerSet"
+
+    def at_cmdset_creation(self):
+        self.add(_CmdMarker())
+
+
+class _CmdSetOut(CmdSet):
+    key = "OutSet"
+
+    def at_cmdset_creation(self):
+        self.add(_CmdOut())
+
+
+class _CmdSetNoMatchCapture(CmdSet):
+    key = "NoMatchCaptureSet"
+
+    def at_cmdset_creation(self):
+        self.add(_CmdNoMatchCapture())
+
+
+# the channel command's lookups are filtered on the game's channel typeclass;
+# the test channels are plain DefaultChannels
+@patch("evennia.commands.default.comms.CHANNEL_DEFAULT_TYPECLASS", DefaultChannel)
+class TestCommandFallbackResolvers(TwistedTestCase, BaseEvenniaTest):
+    """
+    Test the COMMAND_FALLBACK_RESOLVERS pipeline: exits, channels and nicks
+    resolve on parser no-match, commands shadow exits shadow channels shadow
+    nicks, and a custom CMD_NOMATCH command suppresses the resolvers
+    entirely.
+
+    """
+
+    def setUp(self):
+        self.patch(sys.modules["evennia.server.sessionhandler"], "delay", _mockdelay)
+        super().setUp()
+        self.char1.msg = MagicMock()
+        self.channel, _ = DefaultChannel.create("testchan")
+
+    def tearDown(self):
+        if self.channel.pk:
+            self.channel.delete()
+        super().tearDown()
+
+    def _msgs(self):
+        """All text sent to char1, flattened to one string."""
+        return " ".join(
+            str(call.args[0] if call.args else call.kwargs.get("text", ""))
+            for call in self.char1.msg.call_args_list
+        )
+
+    def test_exit_traversal_via_fallback(self):
+        self.char1.execute_cmd("out")
+        self.assertEqual(self.char1.location, self.room2)
+
+    def test_exit_alias_traversal(self):
+        # direction shorthands are plain aliases on the exit object
+        self.exit.aliases.add("o")
+        self.char1.execute_cmd("o")
+        self.assertEqual(self.char1.location, self.room2)
+
+    def test_exit_match_is_case_insensitive(self):
+        self.char1.execute_cmd("OUT")
+        self.assertEqual(self.char1.location, self.room2)
+
+    def test_exit_match_is_exact(self):
+        # exits take no arguments; trailing input defeats the match
+        self.char1.execute_cmd("out now")
+        self.assertEqual(self.char1.location, self.room1)
+        self.assertIn("Command 'out now' is not available", self._msgs())
+
+    def test_locked_exit_consumes_input(self):
+        self.exit.locks.add("traverse:false()")
+        self.exit.db.err_traverse = "The door is barred."
+        self.char1.execute_cmd("out")
+        self.assertEqual(self.char1.location, self.room1)
+        self.assertIn("The door is barred.", self._msgs())
+        self.assertNotIn("is not available", self._msgs())
+
+    def test_command_shadows_exit(self):
+        self.char1.cmdset.add(_CmdSetOut())
+        self.char1.execute_cmd("out")
+        self.assertEqual(self.char1.location, self.room1)
+        self.assertIn("out-command ran", self._msgs())
+
+    def test_exit_shadows_nick(self):
+        self.char1.cmdset.add(_CmdSetMarker())
+        self.char1.nicks.add("out", "marker", category="inputline")
+        self.char1.execute_cmd("out")
+        self.assertEqual(self.char1.location, self.room2)
+        self.assertNotIn("marker ran", self._msgs())
+
+    def test_nick_resolves_as_fallback(self):
+        self.char1.cmdset.add(_CmdSetMarker())
+        self.char1.nicks.add("zap", "marker", category="inputline")
+        self.char1.execute_cmd("zap")
+        self.assertIn("marker ran", self._msgs())
+
+    def test_command_shadows_nick(self):
+        self.char1.cmdset.add(_CmdSetMarker())
+        self.char1.cmdset.add(_CmdSetOut())
+        self.char1.nicks.add("out", "marker", category="inputline")
+        self.char1.execute_cmd("out")
+        self.assertIn("out-command ran", self._msgs())
+        self.assertNotIn("marker ran", self._msgs())
+
+    def test_single_rewrite_guard(self):
+        # only one nick rewrite is honored per input; the no-match error
+        # reports the original string
+        self.char1.cmdset.add(_CmdSetMarker())
+        self.char1.nicks.add("x", "y", category="inputline")
+        self.char1.nicks.add("y", "marker", category="inputline")
+        self.char1.execute_cmd("x")
+        self.assertNotIn("marker ran", self._msgs())
+        self.assertIn("Command 'x' is not available", self._msgs())
+
+    def test_custom_nomatch_suppresses_resolvers(self):
+        # free-input capture (EvMenu/EvEditor style) takes precedence over
+        # both exit and nick resolution
+        self.char1.cmdset.add(_CmdSetNoMatchCapture())
+        self.char1.nicks.add("zap", "look", category="inputline")
+        self.char1.execute_cmd("out")
+        self.assertEqual(self.char1.location, self.room1)
+        self.assertIn("captured out", self._msgs())
+        self.char1.execute_cmd("zap")
+        self.assertIn("captured zap", self._msgs())
+
+    def test_no_exits_cmdset_suppresses_exit_matching(self):
+        # the no_exits merge option gates the exit resolver but not nicks
+        self.char1.cmdset.add(_CmdSetNoExits())
+        self.char1.cmdset.add(_CmdSetMarker())
+        self.char1.nicks.add("out", "marker", category="inputline")
+        self.char1.execute_cmd("out")
+        self.assertEqual(self.char1.location, self.room1)
+        self.assertIn("marker ran", self._msgs())
+
+    def test_suggestions_include_exit_names(self):
+        self.char1.execute_cmd("ou")
+        self.assertIn("Maybe you meant", self._msgs())
+        self.assertIn("out", self._msgs())
+
+    def test_account_caller_without_location(self):
+        # account/session callers have no location; the exit resolver must
+        # fall through without error
+        self.assertEqual(fallbacks.get_exit_candidates(self.account), {})
+        self.assertIsNone(fallbacks.resolve_exits(self.account, "out", CmdSet()))
+        # smoke: the full pipeline must complete without an untrapped error
+        with patch("evennia.commands.cmdhandler._msg_err") as mock_err:
+            self.account.execute_cmd("xyzzy_unknown")
+            mock_err.assert_not_called()
+
+    # channel resolution
+
+    def test_channel_send_via_key(self):
+        self.channel.connect(self.char1)
+        self.channel.msg = MagicMock()
+        self.char1.execute_cmd("testchan hello")
+        self.channel.msg.assert_called_with("hello", senders=self.char1)
+
+    def test_channel_send_via_global_alias(self):
+        # global channel aliases match directly, with no per-user nick
+        self.channel.aliases.add("tc")
+        self.channel.connect(self.char1)
+        self.channel.msg = MagicMock()
+        self.char1.execute_cmd("tc hi")
+        self.channel.msg.assert_called_with("hi", senders=self.char1)
+
+    def test_channel_send_via_personal_nick(self):
+        # a personal channel-nick works without a subscription; the send is
+        # attributed to the account since the caller is not subscribed
+        self.char1.nicks.add("tcc", "testchan", category="channel")
+        self.channel.msg = MagicMock()
+        self.char1.execute_cmd("tcc hi")
+        self.channel.msg.assert_called_with("hi", senders=self.account)
+
+    def test_channel_send_is_case_insensitive(self):
+        self.channel.connect(self.char1)
+        self.channel.msg = MagicMock()
+        self.char1.execute_cmd("TESTCHAN hi")
+        self.channel.msg.assert_called_with("hi", senders=self.char1)
+
+    def test_channel_remainder_verbatim(self):
+        # the message is the raw remainder, only stripped at the ends
+        self.channel.connect(self.char1)
+        self.channel.msg = MagicMock()
+        self.char1.execute_cmd("testchan   hello there = x ; y ")
+        self.channel.msg.assert_called_with("hello there = x ; y", senders=self.char1)
+
+    def test_unsubscribed_channel_falls_through(self):
+        self.channel.msg = MagicMock()
+        self.char1.execute_cmd("testchan hi")
+        self.channel.msg.assert_not_called()
+        self.assertIn("is not available", self._msgs())
+
+    def test_channel_send_lock_failure_consumes(self):
+        self.channel.connect(self.char1)
+        self.channel.locks.add("send:false()")
+        self.channel.msg = MagicMock()
+        self.char1.execute_cmd("testchan hi")
+        self.channel.msg.assert_not_called()
+        self.assertIn("not allowed to send", self._msgs())
+        self.assertNotIn("is not available", self._msgs())
+
+    def test_command_shadows_channel(self):
+        marker_channel, _ = DefaultChannel.create("marker")
+        try:
+            marker_channel.connect(self.char1)
+            marker_channel.msg = MagicMock()
+            self.char1.cmdset.add(_CmdSetMarker())
+            self.char1.execute_cmd("marker")
+            self.assertIn("marker ran", self._msgs())
+            marker_channel.msg.assert_not_called()
+        finally:
+            marker_channel.delete()
+
+    def test_exit_shadows_channel(self):
+        out_channel, _ = DefaultChannel.create("out")
+        try:
+            out_channel.connect(self.char1)
+            out_channel.msg = MagicMock()
+            self.char1.execute_cmd("out")
+            # the exact-match exit wins on the bare name...
+            self.assertEqual(self.char1.location, self.room2)
+            out_channel.msg.assert_not_called()
+            # ...but with a message the exit cannot match, so the channel gets it
+            self.char1.execute_cmd("out hi")
+            out_channel.msg.assert_called_with("hi", senders=self.char1)
+        finally:
+            out_channel.delete()
+
+    def test_channel_shadows_inputline_nick(self):
+        self.channel.connect(self.char1)
+        self.channel.msg = MagicMock()
+        self.char1.cmdset.add(_CmdSetMarker())
+        self.char1.nicks.add("testchan hi", "marker", category="inputline")
+        self.char1.execute_cmd("testchan hi")
+        self.channel.msg.assert_called_with("hi", senders=self.char1)
+        self.assertNotIn("marker ran", self._msgs())
+
+    def test_no_channels_cmdset_suppresses_channel_matching(self):
+        self.channel.connect(self.char1)
+        self.channel.msg = MagicMock()
+        self.char1.cmdset.add(_CmdSetNoChannels())
+        self.char1.execute_cmd("testchan hi")
+        self.channel.msg.assert_not_called()
+        self.assertIn("is not available", self._msgs())
+
+    def test_channel_bare_name_shows_info(self):
+        # a bare channel name is rewritten to the channel command, which
+        # displays the channel info (caller depends on account_caller, so
+        # capture both sinks; the command sends its text as a kwarg)
+        self.channel.connect(self.char1)
+        self.channel.connect(self.account)
+        self.account.msg = MagicMock()
+        self.char1.execute_cmd("testchan")
+        account_msgs = " ".join(
+            str(call.args[0] if call.args else call.kwargs.get("text", ""))
+            for call in self.account.msg.call_args_list
+        )
+        self.assertIn("testchan", self._msgs() + account_msgs)
+
+    def test_puppet_with_account_level_subscription(self):
+        # default channels subscribe the account; sends from the puppet must
+        # resolve and be attributed to the account
+        self.channel.connect(self.account)
+        self.channel.msg = MagicMock()
+        self.char1.execute_cmd("testchan hi")
+        self.channel.msg.assert_called_with("hi", senders=self.account)
+
+    def test_account_caller_channel_send(self):
+        self.channel.connect(self.account)
+        self.channel.msg = MagicMock()
+        self.account.execute_cmd("testchan hi")
+        self.channel.msg.assert_called_with("hi", senders=self.account)

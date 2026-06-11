@@ -2011,11 +2011,9 @@ class TestCommsChannel(BaseEvenniaCommandTest):
     def test_channel__sub(self):
         self.channel.disconnect(self.char1)
 
-        self.call(self.cmdchannel(), "/sub testchannel", "You are now subscribed")
+        self.call(self.cmdchannel(), "/sub testchannel = tc", "You are now subscribed")
         self.assertTrue(self.char1 in self.channel.subscriptions.all())
-        self.assertEqual(
-            self.char1.nicks.nickreplace("testchannel Hello"), "@channel testchannel = Hello"
-        )
+        self.assertEqual(self.char1.nicks.get("tc", category="channel"), "testchannel")
 
     def test_channel__unsub(self):
         self.call(self.cmdchannel(), "/unsub testchannel", "You un-subscribed")
@@ -2030,7 +2028,7 @@ class TestCommsChannel(BaseEvenniaCommandTest):
             "/alias testchannel = foo",
             "Added/updated your alias 'foo' for channel testchannel.",
         )
-        self.assertEqual(self.char1.nicks.nickreplace("foo Hello"), "@channel testchannel = Hello")
+        self.assertEqual(self.char1.nicks.get("foo", category="channel"), "testchannel")
 
         # use alias
         self.channel.msg = Mock()
@@ -2039,7 +2037,7 @@ class TestCommsChannel(BaseEvenniaCommandTest):
 
         # remove alias
         self.call(self.cmdchannel(), "/unalias foo", "Removed your channel alias 'foo'")
-        self.assertEqual(self.char1.nicks.get("foo $1", category="channel"), None)
+        self.assertIsNone(self.char1.nicks.get("foo", category="channel"))
 
     def test_channel__mute(self):
         self.call(self.cmdchannel(), "/mute testchannel", "Muted channel testchannel")
