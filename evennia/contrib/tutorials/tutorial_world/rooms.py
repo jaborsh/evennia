@@ -962,7 +962,7 @@ class DarkCmdSet(CmdSet):
     """
 
     key = "darkroom_cmdset"
-    mergetype = "Replace"
+    exclusive = True
     priority = 2
 
     def at_cmdset_creation(self):

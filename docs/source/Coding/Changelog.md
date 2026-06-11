@@ -2,6 +2,16 @@
 
 ## Main branch
 
+- **Breaking**: Replace the CmdSet merge algebra (Union/Intersect/Replace/Remove mergetypes,
+  `key_mergetypes`, the `duplicates` tri-state) with a layer-stack resolver
+  (`evennia.commands.cmdresolver`). Cmdsets now declare `priority`, `exclusive` (was
+  `mergetype="Replace"`) and `removes` (was `mergetype="Remove"`); same-key commands from
+  different source objects multimatch automatically (no `duplicates` flag needed); alias
+  collisions across different keys rebind the contested name instead of destroying the lower
+  command. A shim translates legacy class-level `mergetype` declarations (`Intersect` raises).
+  Commands compare by object identity again - `Command.__eq__/__ne__/__hash__/__contains__`
+  and `CmdSet.__add__` are gone. The merged result handed to parsers and hooks is a
+  `ResolvedCmdSet`, matched through a per-name binding table.
 - Feat: Add AGENTS.md and .agents context files to aid AI agent development (Griatch)
 - Feat: Add `uv.lock` for Evennia library developers wanting to use the `uv` tool (Griatch)
 - [Feat][pull3867]: Add WebSocket subprotocol negotiation per [MUD Standards proposal][mudstandards-ws].

@@ -376,7 +376,7 @@ class BlindCmdSet(CmdSet):
     key = "BlindCmdSet"
     # we want it to completely replace all normal commands
     # until the timed script removes it again.
-    mergetype = "Replace"
+    exclusive = True
     # we want to stop the player from walking around
     # in this blinded state, so we hide all exits too.
     # (channel commands will still work).

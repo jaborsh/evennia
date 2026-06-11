@@ -458,7 +458,7 @@ class EvMenuCmdSet(CmdSet):
 
     key = "menu_cmdset"
     priority = 1
-    mergetype = "Replace"
+    exclusive = True
     no_objs = True
     no_exits = True
     no_channels = False
@@ -518,17 +518,13 @@ class EvMenu:
                 and return the data expected of a menu node. This allows for
                 dynamic menu creation.
             startnode (str, optional): The starting node name in the menufile.
-            cmdset_mergetype (str, optional): 'Replace' (default) means the menu
-                commands will be exclusive - no other normal commands will
-                be usable while the user is in the menu. 'Union' does merge the menu
-                command, but note that the only command used in EvMenu has key/alias
-                of NOINPUT/NOMATCH. So if you merge with 'Union' and a high `cmdset_prio`
-                (below), you won't replace individual normal commands as you may
-                expect. Instead commands will work normally and you'll only always fall
-                back to menu commands when no other command is found. There is no way
-                to partially replace normal commands with EvMenu actions - to do this,
-                remove the normal command from the caller's cmdset - if not found
-                the menu's version will kick in instead.
+            cmdset_mergetype (str, optional): 'Replace' (default) makes the menu
+                cmdset exclusive - no other normal commands will be usable
+                while the user is in the menu. 'Union' layers the menu cmdset
+                on top instead, but note that the only command used in EvMenu
+                has key/alias of NOINPUT/NOMATCH. So with 'Union' and a high
+                `cmdset_prio` (below), commands will work normally and you'll
+                only fall back to menu commands when no other command is found.
             cmdset_priority (int, optional): The merge priority for the
                 menu command set. The default (1) is usually enough for most
                 types of menus.
@@ -695,9 +691,12 @@ class EvMenu:
         # On reload, ndb is cleared so we can't always close an old menu cleanly first.
         self.caller.cmdset.remove(EvMenuCmdSet)
 
-        # set up the menu command on the caller
+        # set up the menu command on the caller. The legacy cmdset_mergetype
+        # kwarg is still accepted (persistent menus replay it from saved
+        # calldicts): "Replace" means the menu blocks all lower cmdset layers,
+        # anything else lets them through.
         menu_cmdset = EvMenuCmdSet()
-        menu_cmdset.mergetype = str(cmdset_mergetype).lower().capitalize() or "Replace"
+        menu_cmdset.exclusive = str(cmdset_mergetype).lower() != "union"
         menu_cmdset.priority = int(cmdset_priority)
         self.caller.cmdset.add(menu_cmdset, persistent=persistent)
 
@@ -1554,7 +1553,7 @@ class InputCmdSet(CmdSet):
 
     key = "input_cmdset"
     priority = 1
-    mergetype = "Replace"
+    exclusive = True
     no_objs = True
     no_exits = True
     no_channels = False
@@ -1715,7 +1714,7 @@ class YesNoQuestionCmdSet(CmdSet):
 
     key = "yes_no_question_cmdset"
     priority = 1
-    mergetype = "Replace"
+    exclusive = True
     no_objs = True
     no_exits = True
     no_channels = False

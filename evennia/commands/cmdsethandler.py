@@ -74,6 +74,7 @@ from django.conf import settings
 from django.utils.translation import gettext as _
 
 from evennia.commands import cmdsetcache
+from evennia.commands.cmdresolver import resolve_cmdsets
 from evennia.commands.cmdset import CmdSet
 from evennia.server.models import ServerConfig
 from evennia.utils import logger, utils
@@ -127,7 +128,6 @@ class _EmptyCmdSet(CmdSet):
 
     key = "_EMPTY_CMDSET"
     priority = -101
-    mergetype = "Union"
 
 
 def import_cmdset(path, cmdsetobj, emit_to_obj=None, no_logging=False):
@@ -293,8 +293,6 @@ class CmdSetHandler(object):
         self.current = None
         # this holds a history of CommandSets
         self.cmdset_stack = [_EmptyCmdSet(cmdsetobj=self.obj)]
-        # this tracks which mergetypes are actually in play in the stack
-        self.mergetype_stack = ["Union"]
 
         # the subset of the cmdset_paths that are to be stored in the database
         self.persistent_paths = [""]
@@ -316,17 +314,10 @@ class CmdSetHandler(object):
                 mergelist.append(str(snum + 1))
                 strings.append(f" {snum + 1}: {cmdset}")
 
-        # Display the currently active cmdset, limited by self.obj's permissions
-        mergetype = self.mergetype_stack[-1]
-        if mergetype != self.current.mergetype:
-            merged_on = self.cmdset_stack[-2].key
-            mergetype = _("custom {mergetype} on cmdset '{cmdset}'")
-            mergetype = mergetype.format(mergetype=mergetype, cmdset=merged_on)
-
         if mergelist:
-            # current is a result of mergers
+            # current is the resolution of the whole stack
             mergelist = "+".join(mergelist)
-            strings.append(f" <Merged {mergelist}>: {self.current}")
+            strings.append(f" <Resolved {mergelist}>: {self.current}")
         else:
             # current is a single cmdset
             strings.append(" " + str(self.current))
@@ -403,17 +394,10 @@ class CmdSetHandler(object):
                             cmdset.persistent = cmdset.key != "_CMDSET_ERROR"
                             self.cmdset_stack.append(cmdset)
 
-        # merge the stack into a new merged cmdset
-        new_current = None
-        self.mergetype_stack = []
-        for cmdset in self.cmdset_stack:
-            try:
-                # for cmdset's '+' operator, order matters.
-                new_current = cmdset + new_current
-            except TypeError:
-                continue
-            self.mergetype_stack.append(new_current.actual_mergetype)
-        self.current = new_current
+        # resolve the stack into a new current cmdset. All sets share this
+        # handler's object as source, so same-key entries dedupe with the
+        # later stack entry winning.
+        self.current = resolve_cmdsets((cmdset, self.obj) for cmdset in self.cmdset_stack)
         # every stack mutation (add/remove/clear/reset/init) funnels through
         # here, so this single bump keeps all gather caches honest
         cmdsetcache.invalidate_neighborhood(self.obj)

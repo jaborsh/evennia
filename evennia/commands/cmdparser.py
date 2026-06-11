@@ -4,12 +4,18 @@ The default command parser. Use your own by assigning
 replacing cmdparser function. The replacement parser must accept the
 same inputs as the default one.
 
+Note that the `cmdset` argument is a `ResolvedCmdSet` (see
+`evennia.commands.cmdresolver`). Custom parsers that iterate it and call
+`cmd.match()` keep working; for fast per-name lookup use its `bindings`
+table the way `build_matches` below does.
+
 """
 
 import re
 
 from django.conf import settings
 
+from evennia.commands.cmdresolver import make_bindings
 from evennia.utils.logger import log_trace, mask_sensitive_input
 
 _MULTIMATCH_REGEX = re.compile(settings.SEARCH_MULTIMATCH_REGEX, re.I + re.U)
@@ -52,7 +58,10 @@ def build_matches(raw_string, cmdset, include_prefixes=False):
     Args:
         raw_string (str): Input string that can look in any way; the only assumption is
             that the sought command's name/alias must be *first* in the string.
-        cmdset (CmdSet): The current cmdset to pick Commands from.
+        cmdset (ResolvedCmdSet or CmdSet): The current cmdset to pick Commands from.
+            A ResolvedCmdSet is matched through its name-binding table; a plain
+            CmdSet gets an ad-hoc table where every command is reachable on all
+            of its names.
         include_prefixes (bool): If set, include prefixes like @, ! etc (specified in settings)
             in the match, otherwise strip them before matching.
 
@@ -62,13 +71,16 @@ def build_matches(raw_string, cmdset, include_prefixes=False):
     """
     matches = []
     try:
+        table = getattr(cmdset, "bindings", None)
+        if table is None:
+            table = make_bindings(cmdset)
         if not include_prefixes and len(raw_string) > 1:
             raw_string = raw_string.lstrip(_CMD_IGNORE_PREFIXES)
         search_string = raw_string.lower()
-        for cmd in cmdset:
-            cmdname, raw_cmdname = cmd.match(search_string, include_prefixes=include_prefixes)
-            if cmdname:
-                matches.append(create_match(cmdname, raw_string, cmd, raw_cmdname))
+        for cmdname, raw_cmdname, cmd in table.candidates(
+            search_string, include_prefixes=include_prefixes
+        ):
+            matches.append(create_match(cmdname, raw_string, cmd, raw_cmdname))
     except Exception:
         log_trace("cmdhandler error. raw_input:%s" % mask_sensitive_input(raw_string))
     return matches

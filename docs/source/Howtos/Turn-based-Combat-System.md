@@ -277,7 +277,7 @@ from evennia import default_cmds
 
 class CombatCmdSet(CmdSet):
     key = "combat_cmdset"
-    mergetype = "Replace"
+    exclusive = True
     priority = 10 
     no_exits = True
 

@@ -2768,14 +2768,18 @@ class CmdExamine(ObjManipCommand):
 
         txt = ", ".join(
             _truefalse(opt, getattr(cmdset, opt))
-            for opt in ("no_exits", "no_objs", "no_channels", "duplicates")
+            for opt in ("no_exits", "no_objs", "no_channels")
             if getattr(cmdset, opt) is not None
         )
         return ", " + txt if txt else ""
 
     def format_single_cmdset(self, cmdset):
         options = self.format_single_cmdset_options(cmdset)
-        return f"{cmdset.path} [{cmdset.key}] ({cmdset.mergetype}, prio {cmdset.priority}{options})"
+        if cmdset.exclusive:
+            options = ", exclusive" + options
+        if cmdset.removes:
+            options = f", removes: {sorted(cmdset.removes)}" + options
+        return f"{cmdset.path} [{cmdset.key}] (prio {cmdset.priority}{options})"
 
     def format_stored_cmdsets(self, obj):
         if hasattr(obj, "cmdset"):

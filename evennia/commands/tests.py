@@ -95,941 +95,6 @@ class _CmdSetEe_Ef(CmdSet):
 # testing Command Sets
 
 
-class TestCmdSetMergers(TestCase):
-    "Test merging of cmdsets"
-
-    def setUp(self):
-        super().setUp()
-        self.cmdset_a = _CmdSetA()
-        self.cmdset_b = _CmdSetB()
-        self.cmdset_c = _CmdSetC()
-        self.cmdset_d = _CmdSetD()
-
-    def test_union(self):
-        a, c = self.cmdset_a, self.cmdset_c
-        cmdset_f = a + c  # same-prio
-        self.assertEqual(len(cmdset_f.commands), 4)
-        self.assertEqual(sum(1 for cmd in cmdset_f.commands if cmd.from_cmdset == "A"), 2)
-        self.assertEqual(sum(1 for cmd in cmdset_f.commands if cmd.from_cmdset == "C"), 2)
-        cmdset_f = c + a  # same-prio, inverse order
-        self.assertEqual(len(cmdset_f.commands), 4)
-        self.assertEqual(sum(1 for cmd in cmdset_f.commands if cmd.from_cmdset == "A"), 4)
-        self.assertEqual(sum(1 for cmd in cmdset_f.commands if cmd.from_cmdset == "C"), 0)
-        a.priority = 1
-        cmdset_f = a + c  # high prio A
-        self.assertEqual(len(cmdset_f.commands), 4)
-        self.assertEqual(sum(1 for cmd in cmdset_f.commands if cmd.from_cmdset == "A"), 4)
-        self.assertEqual(sum(1 for cmd in cmdset_f.commands if cmd.from_cmdset == "C"), 0)
-
-    def test_intersect(self):
-        a, c = self.cmdset_a, self.cmdset_c
-        a.mergetype = "Intersect"
-        cmdset_f = a + c  # same-prio - c's Union kicks in
-        self.assertEqual(len(cmdset_f.commands), 4)
-        self.assertEqual(sum(1 for cmd in cmdset_f.commands if cmd.from_cmdset == "A"), 2)
-        self.assertEqual(sum(1 for cmd in cmdset_f.commands if cmd.from_cmdset == "C"), 2)
-        cmdset_f = c + a  # same-prio - a's Intersect kicks in
-        self.assertEqual(len(cmdset_f.commands), 2)
-        self.assertEqual(sum(1 for cmd in cmdset_f.commands if cmd.from_cmdset == "A"), 2)
-        self.assertEqual(sum(1 for cmd in cmdset_f.commands if cmd.from_cmdset == "C"), 0)
-        a.priority = 1
-        cmdset_f = a + c  # high prio A, intersect kicks in
-        self.assertEqual(len(cmdset_f.commands), 2)
-        self.assertEqual(sum(1 for cmd in cmdset_f.commands if cmd.from_cmdset == "A"), 2)
-        self.assertEqual(sum(1 for cmd in cmdset_f.commands if cmd.from_cmdset == "C"), 0)
-
-    def test_replace(self):
-        a, c = self.cmdset_a, self.cmdset_c
-        c.mergetype = "Replace"
-        cmdset_f = a + c  # same-prio. C's Replace kicks in
-        self.assertEqual(len(cmdset_f.commands), 2)
-        self.assertEqual(sum(1 for cmd in cmdset_f.commands if cmd.from_cmdset == "A"), 0)
-        self.assertEqual(sum(1 for cmd in cmdset_f.commands if cmd.from_cmdset == "C"), 2)
-        cmdset_f = c + a  # same-prio. A's Union kicks in
-        self.assertEqual(len(cmdset_f.commands), 4)
-        self.assertEqual(sum(1 for cmd in cmdset_f.commands if cmd.from_cmdset == "A"), 4)
-        self.assertEqual(sum(1 for cmd in cmdset_f.commands if cmd.from_cmdset == "C"), 0)
-        c.priority = 1
-        cmdset_f = c + a  # c higher prio. C's Replace kicks in
-        self.assertEqual(len(cmdset_f.commands), 2)
-        self.assertEqual(sum(1 for cmd in cmdset_f.commands if cmd.from_cmdset == "A"), 0)
-        self.assertEqual(sum(1 for cmd in cmdset_f.commands if cmd.from_cmdset == "C"), 2)
-
-    def test_remove(self):
-        a, c = self.cmdset_a, self.cmdset_c
-        c.mergetype = "Remove"
-        cmdset_f = a + c  # same-prio. C's Remove kicks in
-        self.assertEqual(len(cmdset_f.commands), 2)
-        self.assertEqual(sum(1 for cmd in cmdset_f.commands if cmd.from_cmdset == "A"), 2)
-        self.assertEqual(sum(1 for cmd in cmdset_f.commands if cmd.from_cmdset == "C"), 0)
-        cmdset_f = c + a  # same-prio. A's Union kicks in
-        self.assertEqual(len(cmdset_f.commands), 4)
-        self.assertEqual(sum(1 for cmd in cmdset_f.commands if cmd.from_cmdset == "A"), 4)
-        self.assertEqual(sum(1 for cmd in cmdset_f.commands if cmd.from_cmdset == "C"), 0)
-        c.priority = 1
-        cmdset_f = c + a  # c higher prio. C's Remove kicks in
-        self.assertEqual(len(cmdset_f.commands), 2)
-        self.assertEqual(sum(1 for cmd in cmdset_f.commands if cmd.from_cmdset == "A"), 2)
-        self.assertEqual(sum(1 for cmd in cmdset_f.commands if cmd.from_cmdset == "C"), 0)
-
-    def test_system_cmds_not_duplicated_after_replace(self):
-        """System commands must appear exactly once after a Replace merge."""
-        a, c = self.cmdset_a, self.cmdset_c
-
-        class _SysCmd(_BaseCmd):
-            key = "__sys"
-
-        sys_cmd = _SysCmd("A")
-        a.add(sys_cmd)
-
-        c.mergetype = "Replace"
-        c.priority = 1
-        cmdset_f = c + a  # c higher prio, Replace kicks in
-
-        sys_cmds_in_commands = [cmd for cmd in cmdset_f.commands if cmd.key.startswith("__")]
-        self.assertEqual(len(sys_cmds_in_commands), 1)
-
-    def test_system_cmds_not_duplicated_after_union(self):
-        """System commands must appear exactly once after a Union merge, from either side."""
-        a, c = self.cmdset_a, self.cmdset_c
-
-        class _SysCmd(_BaseCmd):
-            key = "__sys"
-
-        # System command on the higher-priority side (cmdset_a)
-        a.add(_SysCmd("A"))
-        a.priority = 1
-        cmdset_f = a + c
-        sys_in_commands = [cmd for cmd in cmdset_f.commands if cmd.key.startswith("__")]
-        self.assertEqual(len(sys_in_commands), 1)
-
-        # System command on the lower-priority side (cmdset_c)
-        a2, c2 = self.cmdset_a, _CmdSetC()
-        c2.add(_SysCmd("C"))
-        a2.priority = 1
-        cmdset_f2 = a2 + c2
-        sys_in_commands2 = [cmd for cmd in cmdset_f2.commands if cmd.key.startswith("__")]
-        self.assertEqual(len(sys_in_commands2), 1)
-
-    def test_order(self):
-        "Merge in reverse- and forward orders, same priorities"
-        a, b, c, d = self.cmdset_a, self.cmdset_b, self.cmdset_c, self.cmdset_d
-        cmdset_f = d + c + b + a  # merge in reverse order of priority
-        self.assertEqual(cmdset_f.priority, 0)
-        self.assertEqual(cmdset_f.mergetype, "Union")
-        self.assertEqual(len(cmdset_f.commands), 4)
-        self.assertTrue(all(True for cmd in cmdset_f.commands if cmd.from_cmdset == "A"))
-        cmdset_f = a + b + c + d  # merge in order of priority
-        self.assertEqual(cmdset_f.priority, 0)
-        self.assertEqual(cmdset_f.mergetype, "Union")
-        self.assertEqual(len(cmdset_f.commands), 4)  # duplicates setting from A transfers
-        self.assertTrue(all(True for cmd in cmdset_f.commands if cmd.from_cmdset == "D"))
-
-    def test_priority_order(self):
-        "Merge in reverse- and forward order with well-defined prioritities"
-        a, b, c, d = self.cmdset_a, self.cmdset_b, self.cmdset_c, self.cmdset_d
-        a.priority = 2
-        b.priority = 1
-        c.priority = 0
-        d.priority = -1
-        cmdset_f = d + c + b + a  # merge in reverse order of priority
-        self.assertEqual(cmdset_f.priority, 2)
-        self.assertEqual(cmdset_f.mergetype, "Union")
-        self.assertEqual(len(cmdset_f.commands), 4)
-        self.assertTrue(all(True for cmd in cmdset_f.commands if cmd.from_cmdset == "A"))
-        cmdset_f = a + b + c + d  # merge in order of priority
-        self.assertEqual(cmdset_f.priority, 2)
-        self.assertEqual(cmdset_f.mergetype, "Union")
-        self.assertEqual(len(cmdset_f.commands), 4)
-        self.assertTrue(all(True for cmd in cmdset_f.commands if cmd.from_cmdset == "A"))
-
-
-class TestOptionTransferTrue(TestCase):
-    """
-    Test cmdset-merge transfer of the cmdset-special options
-    (no_exits/channels/objs/duplicates etc)
-
-    cmdset A has all True options
-
-    """
-
-    def setUp(self):
-        super().setUp()
-        self.cmdset_a = _CmdSetA()
-        self.cmdset_b = _CmdSetB()
-        self.cmdset_c = _CmdSetC()
-        self.cmdset_d = _CmdSetD()
-        self.cmdset_a.priority = 0
-        self.cmdset_b.priority = 0
-        self.cmdset_c.priority = 0
-        self.cmdset_d.priority = 0
-        self.cmdset_a.no_exits = True
-        self.cmdset_a.no_objs = True
-        self.cmdset_a.no_channels = True
-        self.cmdset_a.duplicates = True
-
-    def test_option_transfer__reverse_sameprio_passthrough(self):
-        """
-        A has all True options, merges last (normal reverse merge), same prio.
-        The options should pass through to F since none of the other cmdsets
-        care to change the setting from their default None.
-
-        Since A.duplicates = True, the final result is an union of duplicate
-        pairs (8 commands total).
-
-        """
-        a, b, c, d = self.cmdset_a, self.cmdset_b, self.cmdset_c, self.cmdset_d
-        cmdset_f = d + c + b + a  # reverse, same-prio
-        self.assertTrue(cmdset_f.no_exits)
-        self.assertTrue(cmdset_f.no_objs)
-        self.assertTrue(cmdset_f.no_channels)
-        self.assertIsNone(cmdset_f.duplicates)
-        self.assertEqual(len(cmdset_f.commands), 8)
-
-    def test_option_transfer__forward_sameprio_passthrough(self):
-        """
-        A has all True options, merges first (forward merge), same prio. This
-        should pass those options through since the other all have options set
-        to None. The exception is `duplicates` since that is determined by
-        the two last mergers in the chain both being True.
-
-        """
-        a, b, c, d = self.cmdset_a, self.cmdset_b, self.cmdset_c, self.cmdset_d
-        cmdset_f = a + b + c + d  # forward, same-prio
-        self.assertTrue(cmdset_f.no_exits)
-        self.assertTrue(cmdset_f.no_objs)
-        self.assertTrue(cmdset_f.no_channels)
-        self.assertIsNone(cmdset_f.duplicates)
-        self.assertEqual(len(cmdset_f.commands), 4)
-
-    def test_option_transfer__reverse_highprio_passthrough(self):
-        """
-        A has all True options, merges last (normal reverse  merge) with the
-        highest prio. This should also pass through.
-        """
-        a, b, c, d = self.cmdset_a, self.cmdset_b, self.cmdset_c, self.cmdset_d
-        a.priority = 2
-        b.priority = 1
-        c.priority = 0
-        d.priority = -1
-        cmdset_f = d + c + b + a  # reverse, A top priority
-        self.assertTrue(cmdset_f.no_exits)
-        self.assertTrue(cmdset_f.no_objs)
-        self.assertTrue(cmdset_f.no_channels)
-        self.assertIsNone(cmdset_f.duplicates)
-        self.assertEqual(len(cmdset_f.commands), 4)
-
-    def test_option_transfer__forward_highprio_passthrough(self):
-        """
-        A has all True options, merges first (forward merge). This is a bit
-        synthetic since it will never happen in practice, but logic should
-        still make it pass through.
-        """
-        a, b, c, d = self.cmdset_a, self.cmdset_b, self.cmdset_c, self.cmdset_d
-        a.priority = 2
-        b.priority = 1
-        c.priority = 0
-        d.priority = -1
-        cmdset_f = a + b + c + d  # forward, A top priority. This never happens in practice.
-        self.assertTrue(cmdset_f.no_exits)
-        self.assertTrue(cmdset_f.no_objs)
-        self.assertTrue(cmdset_f.no_channels)
-        self.assertIsNone(cmdset_f.duplicates)
-        self.assertEqual(len(cmdset_f.commands), 4)
-
-    def test_option_transfer__reverse_lowprio_passthrough(self):
-        """
-        A has all True options, merges last (normal reverse merge) with the lowest
-        prio. This never happens (it would always merge first) but logic should hold
-        and pass through since the other cmdsets have None.
-
-        """
-        a, b, c, d = self.cmdset_a, self.cmdset_b, self.cmdset_c, self.cmdset_d
-        a.priority = -1
-        b.priority = 0
-        c.priority = 1
-        d.priority = 2
-        cmdset_f = d + c + b + a  # reverse, A low prio. This never happens in practice.
-        self.assertTrue(cmdset_f.no_exits)
-        self.assertTrue(cmdset_f.no_objs)
-        self.assertTrue(cmdset_f.no_channels)
-        self.assertIsNone(cmdset_f.duplicates)
-        self.assertEqual(len(cmdset_f.commands), 4)
-
-    def test_option_transfer__forward_lowprio_passthrough(self):
-        """
-        A has all True options, merges first (forward merge) with lowest prio. This
-        is the normal behavior for a low-prio cmdset. Passthrough should happen.
-        """
-        a, b, c, d = self.cmdset_a, self.cmdset_b, self.cmdset_c, self.cmdset_d
-        a.priority = -1
-        b.priority = 0
-        c.priority = 1
-        d.priority = 2
-        cmdset_f = a + b + c + d  # forward, A low prio
-        self.assertTrue(cmdset_f.no_exits)
-        self.assertTrue(cmdset_f.no_objs)
-        self.assertTrue(cmdset_f.no_channels)
-        self.assertIsNone(cmdset_f.duplicates)
-        self.assertEqual(len(cmdset_f.commands), 4)
-
-    def test_option_transfer__reverse_highprio_block_passthrough(self):
-        """
-        A has all True options, other cmdsets has False. A merges last with high
-        prio. A should retain its option values and override the others
-
-        """
-        a, b, c, d = self.cmdset_a, self.cmdset_b, self.cmdset_c, self.cmdset_d
-        a.priority = 2
-        b.priority = 1
-        c.priority = 0
-        d.priority = -1
-        c.no_exits = False
-        b.no_objs = False
-        d.duplicates = False
-        # higher-prio sets will change the option up the chain
-        cmdset_f = d + c + b + a  # reverse, high prio
-        self.assertTrue(cmdset_f.no_exits)
-        self.assertTrue(cmdset_f.no_objs)
-        self.assertTrue(cmdset_f.no_channels)
-        self.assertIsNone(cmdset_f.duplicates)
-        self.assertEqual(len(cmdset_f.commands), 4)
-
-    def test_option_transfer__forward_highprio_block_passthrough(self):
-        """
-        A has all True options, other cmdsets has False. A merges last with high
-        prio. This situation should never happen, but logic should hold - the highest
-        prio's options should survive the merge process.
-
-        """
-        a, b, c, d = self.cmdset_a, self.cmdset_b, self.cmdset_c, self.cmdset_d
-        a.priority = 2
-        b.priority = 1
-        c.priority = 0
-        d.priority = -1
-        c.no_exits = False
-        b.no_channels = False
-        b.no_objs = False
-        d.duplicates = False
-        # higher-prio sets will change the option up the chain
-        cmdset_f = a + b + c + d  # forward, high prio, never happens
-        self.assertTrue(cmdset_f.no_exits)
-        self.assertTrue(cmdset_f.no_objs)
-        self.assertTrue(cmdset_f.no_channels)
-        self.assertIsNone(cmdset_f.duplicates)
-        self.assertEqual(len(cmdset_f.commands), 4)
-
-    def test_option_transfer__forward_lowprio_block(self):
-        """
-        A has all True options, other cmdsets has False. A merges last with low
-        prio. This should result in its values being blocked and come out False.
-
-        """
-        a, b, c, d = self.cmdset_a, self.cmdset_b, self.cmdset_c, self.cmdset_d
-        a.priority = -1
-        b.priority = 0
-        c.priority = 1
-        d.priority = 2
-        c.no_exits = False
-        c.no_channels = False
-        b.no_objs = False
-        d.duplicates = False
-        # higher-prio sets will change the option up the chain
-        cmdset_f = a + b + c + d  # forward, A low prio
-        self.assertFalse(cmdset_f.no_exits)
-        self.assertFalse(cmdset_f.no_objs)
-        self.assertFalse(cmdset_f.no_channels)
-        self.assertIsNone(cmdset_f.duplicates)
-        self.assertEqual(len(cmdset_f.commands), 4)
-
-    def test_option_transfer__forward_lowprio_block_partial(self):
-        """
-        A has all True options, other cmdsets has False excet C which has a None
-        for `no_channels`. A merges last with low
-        prio. This should result in its values being blocked and come out False
-        except for no_channels which passes through.
-
-        """
-        a, b, c, d = self.cmdset_a, self.cmdset_b, self.cmdset_c, self.cmdset_d
-        a.priority = -1
-        b.priority = 0
-        c.priority = 1
-        d.priority = 2
-        c.no_exits = False
-        c.no_channels = None  # passthrough
-        b.no_objs = False
-        d.duplicates = False
-        # higher-prio sets will change the option up the chain
-        cmdset_f = a + b + c + d  # forward, A low prio
-        self.assertFalse(cmdset_f.no_exits)
-        self.assertFalse(cmdset_f.no_objs)
-        self.assertTrue(cmdset_f.no_channels)
-        self.assertIsNone(cmdset_f.duplicates)
-        self.assertEqual(len(cmdset_f.commands), 4)
-
-    def test_option_transfer__reverse_highprio_sameprio_order_last(self):
-        """
-        A has all True options and highest prio, D has False and lowest prio,
-        others are passthrough. B has the same prio as A, with passthrough.
-
-        Since A is merged last, this should give prio to A's options
-        """
-        a, b, c, d = self.cmdset_a, self.cmdset_b, self.cmdset_c, self.cmdset_d
-        a.priority = 2
-        b.priority = 2
-        c.priority = 0
-        d.priority = -1
-        d.no_channels = False
-        d.no_exits = False
-        d.no_objs = None
-        d.duplicates = False
-        # higher-prio sets will change the option up the chain
-        cmdset_f = d + c + b + a  # reverse, A same prio, merged after b
-        self.assertTrue(cmdset_f.no_exits)
-        self.assertTrue(cmdset_f.no_objs)
-        self.assertTrue(cmdset_f.no_channels)
-        self.assertIsNone(cmdset_f.duplicates)
-        self.assertEqual(len(cmdset_f.commands), 8)
-
-    def test_option_transfer__reverse_highprio_sameprio_order_first(self):
-        """
-        A has all True options and highest prio, D has False and lowest prio,
-        others are passthrough. B has the same prio as A, with passthrough.
-
-        While B, with None-values, is merged after A, A's options should have
-        replaced those of D at that point, and since B has passthrough the
-        final result should contain A's True options.
-
-        Note that despite A having duplicates=True, there is no duplication in
-        the DB + A merger since they have different priorities.
-
-        """
-        a, b, c, d = self.cmdset_a, self.cmdset_b, self.cmdset_c, self.cmdset_d
-        a.priority = 2
-        b.priority = 2
-        c.priority = 0
-        d.priority = -1
-        d.no_channels = False
-        d.no_exits = False
-        d.no_objs = False
-        d.duplicates = False
-        # higher-prio sets will change the option up the chain
-        cmdset_f = d + c + a + b  # reverse, A same prio, merged before b
-        self.assertTrue(cmdset_f.no_exits)
-        self.assertTrue(cmdset_f.no_objs)
-        self.assertTrue(cmdset_f.no_channels)
-        self.assertIsNone(cmdset_f.duplicates)
-        self.assertEqual(len(cmdset_f.commands), 4)
-
-    def test_option_transfer__reverse_lowprio_block(self):
-        """
-        A has all True options, other cmdsets has False. A merges last with low
-        prio. This usually doesn't happen- it should merge last. But logic should
-        hold and the low-prio cmdset's values should be blocked and come out False.
-
-        """
-        a, b, c, d = self.cmdset_a, self.cmdset_b, self.cmdset_c, self.cmdset_d
-        a.priority = -1
-        b.priority = 0
-        c.priority = 1
-        d.priority = 2
-        c.no_exits = False
-        d.no_channels = False
-        b.no_objs = False
-        d.duplicates = False
-        # higher-prio sets will change the option up the chain
-        cmdset_f = d + c + b + a  # reverse, A low prio, never happens
-        self.assertFalse(cmdset_f.no_exits)
-        self.assertFalse(cmdset_f.no_objs)
-        self.assertFalse(cmdset_f.no_channels)
-        self.assertIsNone(cmdset_f.duplicates)
-        self.assertEqual(len(cmdset_f.commands), 4)
-
-
-class TestOptionTransferFalse(TestCase):
-    """
-    Test cmdset-merge transfer of the cmdset-special options
-    (no_exits/channels/objs/duplicates etc)
-
-    cmdset A has all False options
-
-    """
-
-    def setUp(self):
-        super().setUp()
-        self.cmdset_a = _CmdSetA()
-        self.cmdset_b = _CmdSetB()
-        self.cmdset_c = _CmdSetC()
-        self.cmdset_d = _CmdSetD()
-        self.cmdset_a.priority = 0
-        self.cmdset_b.priority = 0
-        self.cmdset_c.priority = 0
-        self.cmdset_d.priority = 0
-        self.cmdset_a.no_exits = False
-        self.cmdset_a.no_objs = False
-        self.cmdset_a.no_channels = False
-        self.cmdset_a.duplicates = False
-
-    def test_option_transfer__reverse_sameprio_passthrough(self):
-        """
-        A has all False options, merges last (normal reverse merge), same prio.
-        The options should pass through to F since none of the other cmdsets
-        care to change the setting from their default None.
-
-        Since A has duplicates=False, the result is a unique union of 4 cmds.
-        """
-        a, b, c, d = self.cmdset_a, self.cmdset_b, self.cmdset_c, self.cmdset_d
-        cmdset_f = d + c + b + a  # reverse, same-prio
-        self.assertFalse(cmdset_f.no_exits)
-        self.assertFalse(cmdset_f.no_objs)
-        self.assertFalse(cmdset_f.no_channels)
-        self.assertIsNone(cmdset_f.duplicates)
-        self.assertEqual(len(cmdset_f.commands), 4)
-
-    def test_option_transfer__forward_sameprio_passthrough(self):
-        """
-        A has all False options, merges first (forward merge), same prio. This
-        should pass those options through since the other all have options set
-        to None. The exception is `duplicates` since that is determined by
-        the two last mergers in the chain both being .
-
-        """
-        a, b, c, d = self.cmdset_a, self.cmdset_b, self.cmdset_c, self.cmdset_d
-        cmdset_f = a + b + c + d  # forward, same-prio
-        self.assertFalse(cmdset_f.no_exits)
-        self.assertFalse(cmdset_f.no_objs)
-        self.assertFalse(cmdset_f.no_channels)
-        self.assertIsNone(cmdset_f.duplicates)
-        self.assertEqual(len(cmdset_f.commands), 4)
-
-    def test_option_transfer__reverse_highprio_passthrough(self):
-        """
-        A has all False options, merges last (normal reverse  merge) with the
-        highest prio. This should also pass through.
-        """
-        a, b, c, d = self.cmdset_a, self.cmdset_b, self.cmdset_c, self.cmdset_d
-        a.priority = 2
-        b.priority = 1
-        c.priority = 0
-        d.priority = -1
-        cmdset_f = d + c + b + a  # reverse, A top priority
-        self.assertFalse(cmdset_f.no_exits)
-        self.assertFalse(cmdset_f.no_objs)
-        self.assertFalse(cmdset_f.no_channels)
-        self.assertIsNone(cmdset_f.duplicates)
-        self.assertEqual(len(cmdset_f.commands), 4)
-
-    def test_option_transfer__forward_highprio_passthrough(self):
-        """
-        A has all False options, merges first (forward merge). This is a bit
-        synthetic since it will never happen in practice, but logic should
-        still make it pass through.
-        """
-        a, b, c, d = self.cmdset_a, self.cmdset_b, self.cmdset_c, self.cmdset_d
-        a.priority = 2
-        b.priority = 1
-        c.priority = 0
-        d.priority = -1
-        cmdset_f = a + b + c + d  # forward, A top priority. This never happens in practice.
-        self.assertFalse(cmdset_f.no_exits)
-        self.assertFalse(cmdset_f.no_objs)
-        self.assertFalse(cmdset_f.no_channels)
-        self.assertIsNone(cmdset_f.duplicates)
-        self.assertEqual(len(cmdset_f.commands), 4)
-
-    def test_option_transfer__reverse_lowprio_passthrough(self):
-        """
-        A has all False options, merges last (normal reverse merge) with the lowest
-        prio. This never happens (it would always merge first) but logic should hold
-        and pass through since the other cmdsets have None.
-
-        """
-        a, b, c, d = self.cmdset_a, self.cmdset_b, self.cmdset_c, self.cmdset_d
-        a.priority = -1
-        b.priority = 0
-        c.priority = 1
-        d.priority = 2
-        cmdset_f = d + c + b + a  # reverse, A low prio. This never happens in practice.
-        self.assertFalse(cmdset_f.no_exits)
-        self.assertFalse(cmdset_f.no_objs)
-        self.assertFalse(cmdset_f.no_channels)
-        self.assertIsNone(cmdset_f.duplicates)
-        self.assertEqual(len(cmdset_f.commands), 4)
-
-    def test_option_transfer__forward_lowprio_passthrough(self):
-        """
-        A has all False options, merges first (forward merge) with lowest prio. This
-        is the normal behavior for a low-prio cmdset. Passthrough should happen.
-        """
-        a, b, c, d = self.cmdset_a, self.cmdset_b, self.cmdset_c, self.cmdset_d
-        a.priority = -1
-        b.priority = 0
-        c.priority = 1
-        d.priority = 2
-        cmdset_f = a + b + c + d  # forward, A low prio
-        self.assertFalse(cmdset_f.no_exits)
-        self.assertFalse(cmdset_f.no_objs)
-        self.assertFalse(cmdset_f.no_channels)
-        self.assertIsNone(cmdset_f.duplicates)
-        self.assertEqual(len(cmdset_f.commands), 4)
-
-    def test_option_transfer__reverse_highprio_block_passthrough(self):
-        """
-        A has all False options, other cmdsets has True. A merges last with high
-        prio. A should retain its option values and override the others
-
-        """
-        a, b, c, d = self.cmdset_a, self.cmdset_b, self.cmdset_c, self.cmdset_d
-        a.priority = 2
-        b.priority = 1
-        c.priority = 0
-        d.priority = -1
-        c.no_exits = True
-        b.no_objs = True
-        d.duplicates = True
-        # higher-prio sets will change the option up the chain
-        cmdset_f = d + c + b + a  # reverse, high prio
-        self.assertFalse(cmdset_f.no_exits)
-        self.assertFalse(cmdset_f.no_objs)
-        self.assertFalse(cmdset_f.no_channels)
-        self.assertIsNone(cmdset_f.duplicates)
-        self.assertEqual(len(cmdset_f.commands), 4)
-
-    def test_option_transfer__forward_highprio_block_passthrough(self):
-        """
-        A has all False options, other cmdsets has True. A merges last with high
-        prio. This situation should never happen, but logic should hold - the highest
-        prio's options should survive the merge process.
-
-        """
-        a, b, c, d = self.cmdset_a, self.cmdset_b, self.cmdset_c, self.cmdset_d
-        a.priority = 2
-        b.priority = 1
-        c.priority = 0
-        d.priority = -1
-        c.no_exits = True
-        b.no_channels = True
-        b.no_objs = True
-        d.duplicates = True
-        # higher-prio sets will change the option up the chain
-        cmdset_f = a + b + c + d  # forward, high prio, never happens
-        self.assertFalse(cmdset_f.no_exits)
-        self.assertFalse(cmdset_f.no_objs)
-        self.assertFalse(cmdset_f.no_channels)
-        self.assertIsNone(cmdset_f.duplicates)
-        self.assertEqual(len(cmdset_f.commands), 4)
-
-    def test_option_transfer__forward_lowprio_block(self):
-        """
-        A has all False options, other cmdsets has True. A merges last with low
-        prio. This should result in its values being blocked and come out False.
-
-        """
-        a, b, c, d = self.cmdset_a, self.cmdset_b, self.cmdset_c, self.cmdset_d
-        a.priority = -1
-        b.priority = 0
-        c.priority = 1
-        d.priority = 2
-        c.no_exits = True
-        c.no_channels = True
-        b.no_objs = True
-        d.duplicates = True
-        # higher-prio sets will change the option up the chain
-        cmdset_f = a + b + c + d  # forward, A low prio
-        self.assertTrue(cmdset_f.no_exits)
-        self.assertTrue(cmdset_f.no_objs)
-        self.assertTrue(cmdset_f.no_channels)
-        self.assertIsNone(cmdset_f.duplicates)
-        self.assertEqual(len(cmdset_f.commands), 4)
-
-    def test_option_transfer__forward_lowprio_block_partial(self):
-        """
-        A has all False options, other cmdsets has True excet C which has a None
-        for `no_channels`. A merges last with low
-        prio. This should result in its values being blocked and come out True
-        except for no_channels which passes through.
-
-        """
-        a, b, c, d = self.cmdset_a, self.cmdset_b, self.cmdset_c, self.cmdset_d
-        a.priority = -1
-        b.priority = 0
-        c.priority = 1
-        d.priority = 2
-        c.no_exits = True
-        c.no_channels = None  # passthrough
-        b.no_objs = True
-        d.duplicates = True
-        # higher-prio sets will change the option up the chain
-        cmdset_f = a + b + c + d  # forward, A low prio
-        self.assertTrue(cmdset_f.no_exits)
-        self.assertTrue(cmdset_f.no_objs)
-        self.assertFalse(cmdset_f.no_channels)
-        self.assertIsNone(cmdset_f.duplicates)
-        self.assertEqual(len(cmdset_f.commands), 4)
-
-    def test_option_transfer__reverse_sameprio_order_last(self):
-        """
-        A has all False options and highest prio, D has True and lowest prio,
-        others are passthrough. B has the same prio as A, with passthrough.
-
-        Since A is merged last, this should give prio to A's False options
-        """
-        a, b, c, d = self.cmdset_a, self.cmdset_b, self.cmdset_c, self.cmdset_d
-        a.priority = 2
-        b.priority = 2
-        c.priority = 0
-        d.priority = -1
-        d.no_channels = True
-        d.no_exits = True
-        d.no_objs = True
-        d.duplicates = False
-        # higher-prio sets will change the option up the chain
-        cmdset_f = d + c + b + a  # reverse, A high prio, merged after b
-        self.assertFalse(cmdset_f.no_exits)
-        self.assertFalse(cmdset_f.no_objs)
-        self.assertFalse(cmdset_f.no_channels)
-        self.assertIsNone(cmdset_f.duplicates)
-        self.assertEqual(len(cmdset_f.commands), 4)
-
-    def test_option_transfer__reverse_sameprio_order_first(self):
-        """
-        A has all False options and highest prio, D has True and lowest prio,
-        others are passthrough. B has the same prio as A, with passthrough.
-
-        While B, with None-values, is merged after A, A's options should have
-        replaced those of D at that point, and since B has passthrough the
-        final result should contain A's False options.
-
-        """
-        a, b, c, d = self.cmdset_a, self.cmdset_b, self.cmdset_c, self.cmdset_d
-        a.priority = 2
-        b.priority = 2
-        c.priority = 0
-        d.priority = -1
-        d.no_channels = True
-        d.no_exits = True
-        d.no_objs = True
-        d.duplicates = False
-
-        # higher-prio sets will change the option up the chain
-        cmdset_f = d + c + a + b  # reverse, A high prio, merged before b
-        self.assertFalse(cmdset_f.no_exits)
-        self.assertFalse(cmdset_f.no_objs)
-        self.assertFalse(cmdset_f.no_channels)
-        self.assertIsNone(cmdset_f.duplicates)
-        self.assertEqual(len(cmdset_f.commands), 4)
-
-    def test_option_transfer__reverse_lowprio_block(self):
-        """
-        A has all False options, other cmdsets has True. A merges last with low
-        prio. This usually doesn't happen- it should merge last. But logic should
-        hold and the low-prio cmdset's values should be blocked and come out True.
-
-        """
-        a, b, c, d = self.cmdset_a, self.cmdset_b, self.cmdset_c, self.cmdset_d
-        a.priority = -1
-        b.priority = 0
-        c.priority = 1
-        d.priority = 2
-        c.no_exits = True
-        d.no_channels = True
-        b.no_objs = True
-        d.duplicates = True
-        # higher-prio sets will change the option up the chain
-        cmdset_f = d + c + b + a  # reverse, A low prio, never happens
-        self.assertTrue(cmdset_f.no_exits)
-        self.assertTrue(cmdset_f.no_objs)
-        self.assertTrue(cmdset_f.no_channels)
-        self.assertIsNone(cmdset_f.duplicates)
-        self.assertEqual(len(cmdset_f.commands), 4)
-
-
-class TestDuplicateBehavior(TestCase):
-    """
-    Test behavior of .duplicate option, which is a bit special in that it
-    doesn't propagate.
-
-    `A.duplicates=True` for all tests.
-
-    """
-
-    def setUp(self):
-        super().setUp()
-        self.cmdset_a = _CmdSetA()
-        self.cmdset_b = _CmdSetB()
-        self.cmdset_c = _CmdSetC()
-        self.cmdset_d = _CmdSetD()
-        self.cmdset_a.priority = 0
-        self.cmdset_b.priority = 0
-        self.cmdset_c.priority = 0
-        self.cmdset_d.priority = 0
-        self.cmdset_a.duplicates = True
-
-    def test_reverse_sameprio_duplicate__implicit(self):
-        """
-        Test of `duplicates` transfer which does not propagate. Only
-        A has duplicates=True.
-
-        D + B = DB (no duplication, DB.duplication=None)
-        DB + C = DBC  (no duplication, DBC.duplication=None)
-        DBC + A = final (duplication, final.duplication=None)
-
-        """
-        a, b, c, d = self.cmdset_a, self.cmdset_b, self.cmdset_c, self.cmdset_d
-        cmdset_f = d + b + c + a  # two last mergers duplicates=True
-        self.assertIsNone(cmdset_f.duplicates)
-        self.assertEqual(len(cmdset_f.commands), 8)
-
-    def test_reverse_sameprio_duplicate__explicit(self):
-        """
-        Test of `duplicates` transfer, which does not propagate.
-        C.duplication=True
-
-        D + B = DB (no duplication, DB.duplication=None)
-        DB + C = DBC  (duplication, DBC.duplication=None)
-        DBC + A = final (duplication, final.duplication=None)
-
-        """
-        a, b, c, d = self.cmdset_a, self.cmdset_b, self.cmdset_c, self.cmdset_d
-        c.duplicates = True
-        cmdset_f = d + b + c + a  # two last mergers duplicates=True
-        self.assertIsNone(cmdset_f.duplicates)
-        self.assertEqual(len(cmdset_f.commands), 10)
-
-    def test_forward_sameprio_duplicate(self):
-        """
-        Test of `duplicates` transfer which does not propagate.
-        C.duplication=True, merges later than A
-
-        D + B = DB (no duplication, DB.duplication=None)
-        DB + A = DBA (duplication, DBA.duplication=None)
-        DBA + C = final (duplication, final.duplication=None)
-
-        """
-        a, b, c, d = self.cmdset_a, self.cmdset_b, self.cmdset_c, self.cmdset_d
-        c.duplicates = True
-        cmdset_f = d + b + a + c  # two last mergers duplicates=True
-        self.assertIsNone(cmdset_f.duplicates)
-        self.assertEqual(len(cmdset_f.commands), 10)
-
-    def test_reverse_sameprio_duplicate_reverse(self):
-        """
-        Test of `duplicates` transfer which does not propagate.
-        C.duplication=False (explicit), merges before A. This behavior is the
-        same as if C.duplication=None, since A merges later and takes
-        precedence.
-
-        D + B = DB (no duplication, DB.duplication=None)
-        DB + C = DBC  (no duplication, DBC.duplication=None)
-        DBC + A = final (duplication, final.duplication=None)
-
-        """
-        a, b, c, d = self.cmdset_a, self.cmdset_b, self.cmdset_c, self.cmdset_d
-        c.duplicates = False
-        cmdset_f = d + b + c + a  # a merges last, takes precedence
-        self.assertIsNone(cmdset_f.duplicates)
-        self.assertEqual(len(cmdset_f.commands), 8)
-
-    def test_reverse_sameprio_duplicate_forward(self):
-        """
-        Test of `duplicates` transfer which does not propagate.
-        C.duplication=False (explicit), merges after A. This just means
-        only A causes duplicates, earlier in the chain.
-
-        D + B = DB (no duplication, DB.duplication=None)
-        DB + A = DBA (duplication, DBA.duplication=None)
-        DBA + C = final (no duplication, final.duplication=None)
-
-        Note that DBA has 8 cmds due to A merging onto DB with duplication,
-        but since C merges onto this with no duplication, the union will hold
-        6 commands, since C has two commands that replaces the 4 duplicates
-        with uniques copies from C.
-
-        """
-        a, b, c, d = self.cmdset_a, self.cmdset_b, self.cmdset_c, self.cmdset_d
-        c.duplicates = False
-        cmdset_f = d + b + a + c  # a merges before c
-        self.assertIsNone(cmdset_f.duplicates)
-        self.assertEqual(len(cmdset_f.commands), 6)
-
-
-class TestOptionTransferReplace(TestCase):
-    """
-    Test option transfer through more complex merge types.
-    """
-
-    def setUp(self):
-        super().setUp()
-        self.cmdset_a = _CmdSetA()
-        self.cmdset_b = _CmdSetB()
-        self.cmdset_c = _CmdSetC()
-        self.cmdset_d = _CmdSetD()
-        self.cmdset_a.priority = 0
-        self.cmdset_b.priority = 0
-        self.cmdset_c.priority = 0
-        self.cmdset_d.priority = 0
-        self.cmdset_a.no_exits = True
-        self.cmdset_a.no_objs = True
-        self.cmdset_a.no_channels = True
-        self.cmdset_a.duplicates = True
-
-    def test_option_transfer__replace_reverse_highprio(self):
-        """
-        A has all options True and highest priority. C has them False and is
-        Replace-type.
-
-        """
-        a, b, c, d = self.cmdset_a, self.cmdset_b, self.cmdset_c, self.cmdset_d
-        a.priority = 2
-        b.priority = 2
-        c.priority = 0
-        c.mergetype = "Replace"
-        c.no_channels = False
-        c.no_exits = False
-        c.no_objs = False
-        c.duplicates = False
-        d.priority = -1
-
-        cmdset_f = d + c + b + a  # reverse, A high prio, C Replace
-        self.assertTrue(cmdset_f.no_exits)
-        self.assertTrue(cmdset_f.no_objs)
-        self.assertTrue(cmdset_f.no_channels)
-        self.assertIsNone(cmdset_f.duplicates)
-        self.assertEqual(len(cmdset_f.commands), 7)
-
-    def test_option_transfer__replace_reverse_highprio_from_false(self):
-        """
-        Inverse of previous test: A has all options False and highest priority.
-        C has them True and is Replace-type.
-
-        """
-        a, b, c, d = self.cmdset_a, self.cmdset_b, self.cmdset_c, self.cmdset_d
-        a.no_exits = False
-        a.no_objs = False
-        a.no_channels = False
-        a.duplicates = False
-
-        a.priority = 2
-        b.priority = 2
-        c.priority = 0
-        c.mergetype = "Replace"
-        c.no_channels = True
-        c.no_exits = True
-        c.no_objs = True
-        c.duplicates = True
-        d.priority = -1
-
-        cmdset_f = d + c + b + a  # reverse, A high prio, C Replace
-        self.assertFalse(cmdset_f.no_exits)
-        self.assertFalse(cmdset_f.no_objs)
-        self.assertFalse(cmdset_f.no_channels)
-        self.assertIsNone(cmdset_f.duplicates)
-        self.assertEqual(len(cmdset_f.commands), 4)
-
-
-# test cmdhandler functions
-
-
 import sys
 
 from twisted.trial.unittest import TestCase as TwistedTestCase
@@ -1158,12 +223,10 @@ class TestGetAndMergeCmdSets(TwistedTestCase, BaseEvenniaTest):
         deferred.addCallback(_callback)
         return deferred
 
-    def test_duplicates(self):
+    def test_same_source_dedupe(self):
         a, b, c, d = self.cmdset_a, self.cmdset_b, self.cmdset_c, self.cmdset_d
         a.no_exits = True
         a.no_channels = True
-        b.duplicates = True
-        d.duplicates = True
         self.set_cmdsets(self.obj1, a, b, c, d)
         (
             command_objects,
@@ -1178,7 +241,10 @@ class TestGetAndMergeCmdSets(TwistedTestCase, BaseEvenniaTest):
         )
 
         def _callback(cmdset):
-            self.assertEqual(len(cmdset.commands), 9)
+            # all stacked sets share obj1 as source: same-key commands dedupe
+            # with the later-added set winning every key
+            self.assertEqual(len(cmdset.commands), 4)
+            self.assertTrue(all(cmd.from_cmdset == "D" for cmd in cmdset.commands))
 
         deferred.addCallback(_callback)
         return deferred
@@ -1366,7 +432,7 @@ class TestCmdSet(BaseEvenniaTest):
 
         self.assertIsInstance(result, _CmdTest2)
 
-    def test_cmdset_add_allow_duplicates(self):
+    def test_cmdset_add_same_key_replaces(self):
         class _CmdDuplicateA(Command):
             key = "duplicate"
 
@@ -1374,14 +440,12 @@ class TestCmdSet(BaseEvenniaTest):
             key = "duplicate"
 
         cmdset = CmdSet()
-        cmdset.add(_CmdDuplicateA, allow_duplicates=True)
-        cmdset.add(_CmdDuplicateB, allow_duplicates=True)
+        cmdset.add(_CmdDuplicateA)
+        cmdset.add(_CmdDuplicateB)
 
         duplicate_cmds = [cmd for cmd in cmdset.commands if cmd.key == "duplicate"]
-        self.assertEqual(len(duplicate_cmds), 2)
-        self.assertEqual(
-            {cmd.__class__ for cmd in duplicate_cmds}, {_CmdDuplicateA, _CmdDuplicateB}
-        )
+        self.assertEqual(len(duplicate_cmds), 1)
+        self.assertIsInstance(duplicate_cmds[0], _CmdDuplicateB)
 
 
 class _CmdG(Command):
@@ -1472,7 +536,7 @@ class TestIssue2627(TwistedTestCase, BaseEvenniaTest):
 
 
 class TestCmdSetMergeObjBindings(TestCase):
-    """Test that cmdset merges preserve correct cmd.obj bindings."""
+    """Test that cmdset resolution preserves correct cmd.obj bindings."""
 
     def test_merge_preserves_obj_from_different_cmdsets(self):
         """Commands from different objects retain their obj after merge."""
@@ -1493,7 +557,7 @@ class TestCmdSetMergeObjBindings(TestCase):
         cmd_block.obj = obj2
         cmdset2.add(cmd_block)
 
-        merged = cmdset1 + cmdset2
+        merged = resolve_cmdsets([(cmdset1, obj1), (cmdset2, obj2)])
         cmds = {cmd.key: cmd for cmd in merged.commands}
 
         self.assertIs(cmds["a"].obj, obj1)
@@ -1520,7 +584,7 @@ class TestCmdSetMergeObjBindings(TestCase):
         cmd_high.obj = obj_high
         cmdset_high.add(cmd_high)
 
-        merged = cmdset_low + cmdset_high
+        merged = resolve_cmdsets([(cmdset_low, obj_low), (cmdset_high, obj_high)])
         result_cmd = [cmd for cmd in merged.commands if cmd.key == "a"][0]
 
         self.assertIs(result_cmd.obj, obj_high)
@@ -1544,15 +608,15 @@ class TestCmdSetMergeObjBindings(TestCase):
         cmd_b.obj = obj2
         cmdset2.add(cmd_b)
 
-        merged1 = cmdset1 + cmdset2
+        merged1 = resolve_cmdsets([(cmdset1, obj1), (cmdset2, obj2)])
         self.assertEqual(len(merged1.commands), 2)
 
-        # add a new command and re-merge
+        # add a new command and re-resolve
         cmd_c = _CmdC("set1")
         cmd_c.obj = obj1
         cmdset1.add(cmd_c)
 
-        merged2 = cmdset1 + cmdset2
+        merged2 = resolve_cmdsets([(cmdset1, obj1), (cmdset2, obj2)])
         self.assertEqual(len(merged2.commands), 3)
         cmds = {cmd.key: cmd for cmd in merged2.commands}
         self.assertIn("c", cmds)
@@ -1580,13 +644,13 @@ class TestCmdSetMergeObjBindings(TestCase):
         cmd_c.obj = obj2
         cmdset2.add(cmd_c)
 
-        merged1 = cmdset1 + cmdset2
+        merged1 = resolve_cmdsets([(cmdset1, obj1), (cmdset2, obj2)])
         self.assertEqual(len(merged1.commands), 3)
 
-        # remove a command and re-merge
+        # remove a command and re-resolve
         cmdset1.remove(cmd_b)
 
-        merged2 = cmdset1 + cmdset2
+        merged2 = resolve_cmdsets([(cmdset1, obj1), (cmdset2, obj2)])
         self.assertEqual(len(merged2.commands), 2)
         keys = {cmd.key for cmd in merged2.commands}
         self.assertNotIn("b", keys)
@@ -1806,20 +870,15 @@ class TestCmdsetGatherCache(_GatherCacheTestMixin, TwistedTestCase, BaseEvenniaT
         merged = self._gather(self.obj1)
         self.assertIn("d", [cmd.key for cmd in merged.commands])
 
-    def test_duplicates_parity_and_restore(self):
+    def test_cross_source_coexistence(self):
         # same-key commands on two different room objects must stay separate
-        # (duplicates handling) on both the build and the cached path, and the
-        # mutated duplicates flag must be restored after every gather
+        # (source-identity multimatch) on both the build and the cached path
         self.obj2.cmdset.add(_CmdSetB())
         self.room1.cmdset.add(_CmdSetB())
         built = self._prime(self.obj1)
-        count_built = sum(1 for cmd in built.commands if cmd.key == "b")
-        self.assertEqual(count_built, 2)
-        self.assertIsNone(self.obj2.cmdset.cmdset_stack[-1].duplicates)
+        self.assertEqual(sum(1 for cmd in built.commands if cmd.key == "b"), 2)
         cached = self._gather(self.obj1)
-        count_cached = sum(1 for cmd in cached.commands if cmd.key == "b")
-        self.assertEqual(count_built, count_cached)
-        self.assertIsNone(self.obj2.cmdset.cmdset_stack[-1].duplicates)
+        self.assertEqual(sum(1 for cmd in cached.commands if cmd.key == "b"), 2)
 
 
 class TestCmdsetGatherCacheInvalidation(_GatherCacheTestMixin, TwistedTestCase, BaseEvenniaTest):
@@ -2026,18 +1085,16 @@ class TestCmdsetGatherCacheDynamic(_GatherCacheTestMixin, TwistedTestCase, BaseE
             legacy = self._gather(self.obj1)
         self.assertEqual(self._keys(merged), self._keys(legacy))
 
-    def test_duplicates_parity_with_dynamic(self):
+    def test_cross_source_coexistence_with_dynamic(self):
         # same-key commands on a dynamic and a static object must stay
-        # separate on both paths, with the duplicates flag restored after
+        # separate on both paths
         self.obj2.cmdset_dynamic = True
         self.obj2.cmdset.add(_CmdSetB())
         self.room1.cmdset.add(_CmdSetB())
         built = self._prime(self.obj1)
         self.assertEqual(sum(1 for cmd in built.commands if cmd.key == "b"), 2)
-        self.assertIsNone(self.obj2.cmdset.cmdset_stack[-1].duplicates)
         cached = self._gather(self.obj1)
         self.assertEqual(sum(1 for cmd in cached.commands if cmd.key == "b"), 2)
-        self.assertIsNone(self.obj2.cmdset.cmdset_stack[-1].duplicates)
 
     def test_invalidate_caches_escape_hatch(self):
         # a static object's call lock freezes between engine events; the
@@ -2127,3 +1184,391 @@ class TestCmdsetGatherCacheParity(_GatherCacheTestMixin, TwistedTestCase, BaseEv
         self._assert_parity(self.char1, providers, "no_objs gate raised")
         self.char1.cmdset.remove(_CmdSetNoObjs)
         self._assert_parity(self.char1, providers, "gates lowered")
+
+
+# layer-stack resolver tests
+
+import re
+
+from evennia.commands.cmdresolver import (
+    BindingTable,
+    ResolvedCmdSet,
+    make_bindings,
+    resolve_cmdsets,
+)
+
+_ARG_REGEX = re.compile(r"^[ /]|\n|$", re.I + re.UNICODE)
+
+
+def _rcmd(key, aliases=None, arg_regex=None, obj=None):
+    """Build a bare command instance for resolver tests."""
+    cmd = Command()
+    cmd.set_key(key)
+    if aliases:
+        cmd.set_aliases(aliases)
+    cmd.arg_regex = arg_regex
+    cmd.obj = obj
+    return cmd
+
+
+def _rset(
+    key,
+    commands=(),
+    priority=0,
+    exclusive=False,
+    removes=(),
+    no_exits=None,
+    no_objs=None,
+    no_channels=None,
+):
+    """Build a cmdset instance for resolver tests."""
+    cmdset = CmdSet(key=key)
+    cmdset.priority = priority
+    cmdset.exclusive = exclusive
+    cmdset.removes = removes
+    cmdset.no_exits = no_exits
+    cmdset.no_objs = no_objs
+    cmdset.no_channels = no_channels
+    for cmd in commands:
+        cmdset.add(cmd)
+    return cmdset
+
+
+class TestResolverShadowing(TestCase):
+    def test_key_shadows_whole_command(self):
+        # higher-prio same key removes the lower command including its aliases
+        low_look = _rcmd("look", aliases=["l"])
+        high_look = _rcmd("look")
+        resolved = resolve_cmdsets(
+            [
+                (_rset("low", [low_look]), None),
+                (_rset("high", [high_look], priority=1), None),
+            ]
+        )
+        self.assertEqual(resolved.commands, [high_look])
+        self.assertEqual(resolved.bindings.names["look"], (high_look,))
+        self.assertNotIn("l", resolved.bindings.names)
+
+    def test_alias_rebinds_lower_command_survives(self):
+        # different keys sharing an alias: the name rebinds to the higher
+        # command, the lower one stays reachable via its other names
+        look = _rcmd("look", aliases=["l"])
+        lock = _rcmd("lock", aliases=["l"])
+        resolved = resolve_cmdsets(
+            [
+                (_rset("low", [look]), None),
+                (_rset("high", [lock], priority=1), None),
+            ]
+        )
+        self.assertCountEqual(resolved.commands, [look, lock])
+        self.assertEqual(resolved.bindings.names["l"], (lock,))
+        self.assertEqual(resolved.bindings.names["look"], (look,))
+        self.assertEqual(resolved.bindings.names["lock"], (lock,))
+
+    def test_same_priority_later_gather_wins(self):
+        early = _rcmd("jump")
+        late = _rcmd("jump")
+        source = object()
+        resolved = resolve_cmdsets(
+            [
+                (_rset("early", [early]), source),
+                (_rset("late", [late]), source),
+            ]
+        )
+        self.assertEqual(resolved.commands, [late])
+
+
+class TestResolverExclusive(TestCase):
+    def test_exclusive_blocks_lower_layers(self):
+        default = _rcmd("look")
+        menuopt = _rcmd("menuopt")
+        resolved = resolve_cmdsets(
+            [
+                (_rset("default", [default]), None),
+                (_rset("menu", [menuopt], priority=1, exclusive=True), None),
+            ]
+        )
+        self.assertEqual(resolved.commands, [menuopt])
+
+    def test_layers_above_exclusive_still_resolve(self):
+        default = _rcmd("look")
+        menuopt = _rcmd("menuopt")
+        editline = _rcmd("editline")
+        resolved = resolve_cmdsets(
+            [
+                (_rset("default", [default]), None),
+                (_rset("menu", [menuopt], priority=1, exclusive=True), None),
+                (_rset("editor", [editline], priority=150, exclusive=True), None),
+            ]
+        )
+        self.assertEqual(resolved.commands, [editline])
+
+    def test_non_exclusive_layer_above_exclusive_unions(self):
+        default = _rcmd("look")
+        menuopt = _rcmd("menuopt")
+        helper = _rcmd("helper")
+        resolved = resolve_cmdsets(
+            [
+                (_rset("default", [default]), None),
+                (_rset("menu", [menuopt], priority=1, exclusive=True), None),
+                (_rset("extra", [helper], priority=2), None),
+            ]
+        )
+        self.assertCountEqual(resolved.commands, [helper, menuopt])
+
+    def test_system_commands_bypass_exclusive(self):
+        default = _rcmd("look")
+        noinput = _rcmd("__noinput_command")
+        menuopt = _rcmd("menuopt")
+        resolved = resolve_cmdsets(
+            [
+                (_rset("default", [default, noinput]), None),
+                (_rset("menu", [menuopt], priority=1, exclusive=True), None),
+            ]
+        )
+        self.assertIs(resolved.get("__noinput_command"), noinput)
+        self.assertIn(noinput, resolved.commands)
+        self.assertEqual(resolved.get_system_cmds(), [noinput])
+
+    def test_system_commands_stay_parser_matchable(self):
+        # CMD_LOGINSTART arrives as raw input on connect and the unloggedin
+        # look is reachable as look/l - syscommands must be in the bindings
+        unlook = _rcmd("__unloggedin_look_command", aliases=["look", "l"])
+        resolved = resolve_cmdsets([(_rset("unloggedin", [unlook]), None)])
+        for name in ("__unloggedin_look_command", "look", "l"):
+            self.assertEqual(resolved.bindings.names.get(name), (unlook,))
+        self.assertEqual(
+            resolved.bindings.candidates("__unloggedin_look_command"),
+            [("__unloggedin_look_command", "__unloggedin_look_command", unlook)],
+        )
+
+    def test_normal_command_keeps_name_contested_by_system_alias(self):
+        look = _rcmd("look")
+        syslook = _rcmd("__unloggedin_look_command", aliases=["look"])
+        resolved = resolve_cmdsets([(_rset("default", [look, syslook]), None)])
+        self.assertEqual(resolved.bindings.names.get("look"), (look,))
+        self.assertEqual(resolved.bindings.names.get("__unloggedin_look_command"), (syslook,))
+
+    def test_flags_pass_through_exclusive(self):
+        resolved = resolve_cmdsets(
+            [
+                (_rset("default", no_channels=True), None),
+                (_rset("menu", priority=1, exclusive=True, no_objs=True), None),
+            ]
+        )
+        self.assertTrue(resolved.no_channels)
+        self.assertTrue(resolved.no_objs)
+        self.assertIsNone(resolved.no_exits)
+
+
+class TestResolverRemoves(TestCase):
+    def test_removes_filters_lower_layers_by_key(self):
+        look = _rcmd("look", aliases=["l"])
+        jump = _rcmd("jump")
+        resolved = resolve_cmdsets(
+            [
+                (_rset("default", [look, jump]), None),
+                (_rset("filter", priority=1, removes=("look",)), None),
+            ]
+        )
+        self.assertEqual(resolved.commands, [jump])
+        self.assertNotIn("l", resolved.bindings.names)
+
+    def test_removes_does_not_affect_higher_layers(self):
+        attack = _rcmd("attack")
+        resolved = resolve_cmdsets(
+            [
+                (_rset("filter", removes=("attack",)), None),
+                (_rset("combat", [attack], priority=1), None),
+            ]
+        )
+        self.assertEqual(resolved.commands, [attack])
+
+    def test_removes_spares_system_commands(self):
+        noinput = _rcmd("__noinput_command")
+        resolved = resolve_cmdsets(
+            [
+                (_rset("default", [noinput]), None),
+                (_rset("filter", priority=1, removes=("__noinput_command",)), None),
+            ]
+        )
+        self.assertIs(resolved.get("__noinput_command"), noinput)
+
+
+class TestSourceIdentityMultimatch(TestCase):
+    def test_different_sources_coexist(self):
+        north1 = _rcmd("north")
+        north2 = _rcmd("north")
+        resolved = resolve_cmdsets(
+            [
+                (_rset("exit1", [north1]), object()),
+                (_rset("exit2", [north2]), object()),
+            ]
+        )
+        self.assertCountEqual(resolved.commands, [north1, north2])
+        self.assertCountEqual(resolved.bindings.names["north"], (north1, north2))
+
+    def test_same_source_dedupes(self):
+        north1 = _rcmd("north")
+        north2 = _rcmd("north")
+        source = object()
+        resolved = resolve_cmdsets(
+            [
+                (_rset("exit1", [north1]), source),
+                (_rset("exit2", [north2]), source),
+            ]
+        )
+        self.assertEqual(resolved.commands, [north2])
+
+    def test_mixed_sources(self):
+        press1 = _rcmd("press")
+        press2 = _rcmd("press")
+        press3 = _rcmd("press")
+        source_a, source_b = object(), object()
+        resolved = resolve_cmdsets(
+            [
+                (_rset("one", [press1]), source_a),
+                (_rset("two", [press2]), source_a),
+                (_rset("three", [press3]), source_b),
+            ]
+        )
+        self.assertCountEqual(resolved.commands, [press2, press3])
+
+    def test_higher_priority_shadows_across_sources(self):
+        low = _rcmd("press")
+        high = _rcmd("press")
+        resolved = resolve_cmdsets(
+            [
+                (_rset("low", [low]), object()),
+                (_rset("high", [high], priority=1), object()),
+            ]
+        )
+        self.assertEqual(resolved.commands, [high])
+
+
+class _AccessDenyCmd(Command):
+    def access(self, srcobj, access_type="cmd", default=False, session=None):
+        return False
+
+
+class _AccessAllowCmd(Command):
+    def access(self, srcobj, access_type="cmd", default=False, session=None):
+        return True
+
+
+class TestResolverResultSurface(TestCase):
+    def test_empty_gather_resolves_to_none(self):
+        self.assertIsNone(resolve_cmdsets([]))
+
+    def test_top_layer_names_result(self):
+        resolved = resolve_cmdsets(
+            [
+                (_rset("low", [_rcmd("look")]), None),
+                (_rset("high", [_rcmd("menuopt")], priority=2), None),
+            ]
+        )
+        self.assertEqual(resolved.key, "high")
+        self.assertEqual(resolved.priority, 2)
+
+    def test_merged_from_keeps_gather_order(self):
+        low = _rset("low", priority=5)
+        high = _rset("high")
+        resolved = resolve_cmdsets([(low, None), (high, None)])
+        self.assertEqual(resolved.merged_from, [low, high])
+
+    def test_iteration_count_and_membership(self):
+        look = _rcmd("look", aliases=["l"])
+        resolved = resolve_cmdsets([(_rset("set", [look]), None)])
+        self.assertEqual(list(resolved), [look])
+        self.assertEqual(resolved.count(), 1)
+        self.assertIn(look, resolved)
+        self.assertIn("l", resolved)
+        self.assertNotIn("missing", resolved)
+
+    def test_get_by_key_alias_and_instance(self):
+        look = _rcmd("look", aliases=["l"])
+        resolved = resolve_cmdsets([(_rset("set", [look]), None)])
+        self.assertIs(resolved.get("look"), look)
+        self.assertIs(resolved.get("l"), look)
+        self.assertIs(resolved.get(look), look)
+        self.assertIsNone(resolved.get("missing"))
+        self.assertIsNone(resolved.get(_rcmd("other")))
+
+    def test_make_unique_prefers_caller(self):
+        caller = object()
+        mine = _rcmd("press", obj=caller)
+        other = _rcmd("press", obj=object())
+        resolved = resolve_cmdsets(
+            [
+                (_rset("other", [other]), object()),
+                (_rset("mine", [mine]), object()),
+            ]
+        )
+        self.assertEqual(resolved.count(), 2)
+        resolved.make_unique(caller)
+        self.assertEqual(resolved.commands, [mine])
+
+    def test_get_all_cmd_keys_and_aliases(self):
+        allowed = _AccessAllowCmd()
+        allowed.set_key("look")
+        allowed.set_aliases(["l"])
+        allowed.arg_regex = None
+        denied = _AccessDenyCmd()
+        denied.set_key("deny")
+        denied.arg_regex = None
+        resolved = resolve_cmdsets([(_rset("set", [allowed, denied]), None)])
+        self.assertCountEqual(resolved.get_all_cmd_keys_and_aliases(), ["look", "l", "deny"])
+        self.assertCountEqual(resolved.get_all_cmd_keys_and_aliases(caller=object()), ["look", "l"])
+
+    def test_flag_resolution_first_non_none_top_down(self):
+        resolved = resolve_cmdsets(
+            [
+                (_rset("low", no_exits=True, no_objs=True), None),
+                (_rset("high", priority=1, no_exits=False), None),
+            ]
+        )
+        self.assertFalse(resolved.no_exits)
+        self.assertTrue(resolved.no_objs)
+        self.assertIsNone(resolved.no_channels)
+
+
+class TestBindingTableMatching(TestCase):
+    def test_longest_passing_name_wins(self):
+        smile = _rcmd("smile", aliases=["smile at"], arg_regex=_ARG_REGEX)
+        table = make_bindings([smile])
+        matches = table.candidates("smile at bob")
+        self.assertEqual(matches, [("smile at", "smile at", smile)])
+
+    def test_arg_regex_failure_falls_through_to_shorter_name(self):
+        smile = _rcmd("smile", aliases=["smile at"], arg_regex=_ARG_REGEX)
+        table = make_bindings([smile])
+        matches = table.candidates("smile atx")
+        self.assertEqual(matches, [("smile", "smile", smile)])
+
+    def test_multimatch_candidates_all_returned(self):
+        north1 = _rcmd("north")
+        north2 = _rcmd("north")
+        table = BindingTable({"north": [north1, north2]})
+        matches = table.candidates("north")
+        self.assertEqual(matches, [("north", "north", north1), ("north", "north", north2)])
+
+    def test_noprefix_matching(self):
+        desc = _rcmd("@desc", arg_regex=_ARG_REGEX)
+        table = make_bindings([desc])
+        self.assertEqual(table.candidates("desc here"), [])
+        matches = table.candidates("desc here", include_prefixes=False)
+        self.assertEqual(matches, [("desc", "@desc", desc)])
+
+    def test_make_bindings_does_not_shadow(self):
+        # the plain-list fallback must behave like polling each command's
+        # match(): every command reachable on every one of its names
+        look = _rcmd("look", aliases=["l"])
+        lock = _rcmd("lock", aliases=["l"])
+        table = make_bindings([look, lock])
+        matched = {cmd for _, _, cmd in table.candidates("l")}
+        self.assertEqual(matched, {look, lock})
+
+    def test_no_match_returns_empty(self):
+        look = _rcmd("look")
+        table = make_bindings([look])
+        self.assertEqual(table.candidates("dance"), [])

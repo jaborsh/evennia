@@ -390,7 +390,7 @@ class BuildingMenuCmdSet(CmdSet):
 
     key = "building_menu"
     priority = 5
-    mergetype = "Replace"
+    exclusive = True
 
     def at_cmdset_creation(self):
         """Populates the cmdset with commands."""

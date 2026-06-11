@@ -3534,11 +3534,11 @@ class DefaultExit(DefaultObject):
             is_exit=True,
             obj=exidbobj,
         )
-        # create a cmdset
-        exit_cmdset = cmdset.CmdSet(None)
+        # create a cmdset. Same-named exits coexist for multimatching
+        # automatically, since each exit is its own cmdset source.
+        exit_cmdset = cmdset.CmdSet(exidbobj)
         exit_cmdset.key = "ExitCmdSet"
         exit_cmdset.priority = self.priority
-        exit_cmdset.duplicates = True
         # add command to cmdset
         exit_cmdset.add(cmd)
         return exit_cmdset

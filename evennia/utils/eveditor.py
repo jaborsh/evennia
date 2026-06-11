@@ -209,7 +209,7 @@ class SaveYesNoCmdSet(CmdSet):
 
     key = "quitsave_yesno"
     priority = 150  # override other cmdsets.
-    mergetype = "Replace"
+    exclusive = True
 
     def at_cmdset_creation(self):
         """at cmdset creation"""
@@ -827,7 +827,7 @@ class EvEditorCmdSet(CmdSet):
 
     key = "editorcmdset"
     priority = 150  # override other cmdsets.
-    mergetype = "Replace"
+    exclusive = True
 
     def at_cmdset_creation(self):
         self.add(CmdLineInput())

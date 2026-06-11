@@ -1442,7 +1442,7 @@ class TestBuilding(BaseEvenniaCommandTest):
         self.call(
             building.CmdListCmdSets(),
             "",
-            "<CmdSetHandler> stack:\n <CmdSet DefaultCharacter, Union, perm, prio 0>:",
+            "<CmdSetHandler> stack:\n ResolvedCmdSet(DefaultCharacter, prio 0,",
         )
         self.call(building.CmdListCmdSets(), "NotFound", "Could not find 'NotFound'")
 

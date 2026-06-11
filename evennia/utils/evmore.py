@@ -132,7 +132,7 @@ class CmdSetMore(CmdSet):
 
     key = "more_commands"
     priority = 110
-    mergetype = "Replace"
+    exclusive = True
 
     def at_cmdset_creation(self):
         self.add(CmdMore())

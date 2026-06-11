@@ -39,6 +39,7 @@ from twisted.internet.defer import inlineCallbacks
 from twisted.internet.task import deferLater
 
 from evennia.commands import cmdsetcache
+from evennia.commands.cmdresolver import resolve_cmdsets
 from evennia.commands.cmdset import CmdSet
 from evennia.commands.command import InterruptCommand
 from evennia.utils import logger, utils
@@ -356,12 +357,13 @@ def get_and_merge_cmdsets(
         @inlineCallbacks
         def _get_local_obj_cmdsets(obj):
             """
-            Helper-method; Get Object-level cmdsets. Also records the
-            gather-cache segments in gather order: static objects' cmdsets
-            group into ("local", [cmdsets]) runs while objects with
-            `cmdset_dynamic = True` become ("dynamic", obj) segments,
-            re-evaluated per input - recorded even when their call lock
-            currently fails, since it may pass on a later input.
+            Helper-method; Get Object-level cmdsets as (cmdset, source-object)
+            pairs. Also records the gather-cache segments in gather order:
+            static objects' cmdsets group into ("local", [(cmdset, obj)])
+            runs while objects with `cmdset_dynamic = True` become
+            ("dynamic", obj) segments, re-evaluated per input - recorded even
+            when their call lock currently fails, since it may pass on a
+            later input.
 
             """
             # Gather cmdsets from location, objects in location or carried
@@ -396,8 +398,8 @@ def get_and_merge_cmdsets(
                     callable_ids = {id(lobj) for lobj in callable_objlist}
                     static_group = []
                     for lobj in local_objlist:
-                        lobj_cmdsets = (
-                            list(lobj.cmdset.cmdset_stack)
+                        lobj_entries = (
+                            [(cmdset, lobj) for cmdset in lobj.cmdset.cmdset_stack]
                             if id(lobj) in callable_ids and lobj.cmdset.current
                             else []
                         )
@@ -407,17 +409,10 @@ def get_and_merge_cmdsets(
                                 static_group = []
                             local_segments.append(("dynamic", lobj))
                         else:
-                            static_group.extend(lobj_cmdsets)
-                        local_obj_cmdsets.extend(lobj_cmdsets)
+                            static_group.extend(lobj_entries)
+                        local_obj_cmdsets.extend(lobj_entries)
                     if static_group:
                         local_segments.append(("local", static_group))
-                    for cset in local_obj_cmdsets:
-                        # This is necessary for object sets, or we won't be able to
-                        # separate the command sets from each other in a busy room. We
-                        # only keep the setting if duplicates were set to False/True
-                        # explicitly.
-                        cset.old_duplicates = cset.duplicates
-                        cset.duplicates = True if cset.duplicates is None else cset.duplicates
                 return local_obj_cmdsets, local_segments
             except Exception:
                 _msg_err(caller, _ERROR_CMDSETS)
@@ -429,6 +424,7 @@ def get_and_merge_cmdsets(
             Helper method; Re-evaluate a `cmdset_dynamic` local object's
             contribution on the cached path: call lock, `at_cmdset_get` hook
             and current stack, with the cached gather's no_exits gate applied.
+            Returns (cmdset, source-object) pairs.
 
             """
             try:
@@ -445,7 +441,7 @@ def get_and_merge_cmdsets(
                 dyn_cmdsets = yield list(obj.cmdset.cmdset_stack)
                 if no_exits:
                     dyn_cmdsets = [cmdset for cmdset in dyn_cmdsets if cmdset.key != "ExitCmdSet"]
-                return dyn_cmdsets
+                return [(cmdset, obj) for cmdset in dyn_cmdsets]
             except Exception:
                 _msg_err(caller, _ERROR_CMDSETS)
                 raise ErrorReported(raw_string)
@@ -468,57 +464,43 @@ def get_and_merge_cmdsets(
                 return (CmdSet(), [])
 
         @inlineCallbacks
-        def _weed_and_merge(object_cmdsets):
+        def _weed_and_resolve(entries):
             """
             Helper method; Weed out empty cmdsets, report import errors and
-            merge the remainder via the fingerprint-keyed merge cache.
+            resolve the remaining (cmdset, source) pairs via the
+            fingerprint-keyed merge cache.
 
             """
             # weed out all non-found sets
-            cmdsets = yield [
-                cmdset for cmdset in object_cmdsets if cmdset and cmdset.key != "_EMPTY_CMDSET"
+            entries = yield [
+                (cmdset, source)
+                for cmdset, source in entries
+                if cmdset and cmdset.key != "_EMPTY_CMDSET"
             ]
             # report cmdset errors to user (these should already have been logged)
             if report_to:
                 yield [
                     report_to.msg(err_helper(cmdset.errmessage, cmdid=cmdid))
-                    for cmdset in cmdsets
+                    for cmdset, _ in entries
                     if cmdset.key == "_CMDSET_ERROR"
                 ]
 
-            if not cmdsets:
+            if not entries:
                 return None
-            # each cmdset caches its own fingerprint, so this is just a tuple lookup
-            mergehash = tuple(cmdset.fingerprint for cmdset in cmdsets)
+            # each cmdset caches its own fingerprint, so this is just a tuple
+            # lookup. The source is part of the key: same-key commands from
+            # different sources coexist (multimatch) where same-source ones
+            # dedupe, so resolution depends on it.
+            mergehash = tuple((cmdset.fingerprint, source) for cmdset, source in entries)
             if mergehash in _CMDSET_MERGE_CACHE:
-                # cached merge exists; mark as recently used.
-                # Note: the cached cmdset's `merged_from` still references the
+                # cached resolution exists; mark as recently used.
+                # Note: the cached result's `merged_from` still references the
                 # cmdset objects from the original miss — not the current caller's.
                 # Content is equivalent (same fingerprint), so this is harmless.
                 _CMDSET_MERGE_CACHE.move_to_end(mergehash)
                 cmdset = _CMDSET_MERGE_CACHE[mergehash]
             else:
-                # we group and merge all same-prio cmdsets separately (this avoids
-                # order-dependent clashes in certain cases, such as
-                # when duplicates=True)
-                tempmergers = {}
-                for cmdset in cmdsets:
-                    prio = cmdset.priority
-                    if prio in tempmergers:
-                        # merge same-prio cmdset together separately
-                        tempmergers[prio] = yield tempmergers[prio] + cmdset
-                    else:
-                        tempmergers[prio] = cmdset
-
-                # sort cmdsets after reverse priority (highest prio are merged in last)
-                sorted_cmdsets = yield sorted(list(tempmergers.values()), key=lambda x: x.priority)
-
-                # Merge all command sets into one, beginning with the lowest-prio one
-                cmdset = sorted_cmdsets[0]
-                for merging_cmdset in sorted_cmdsets[1:]:
-                    cmdset = yield cmdset + merging_cmdset
-                # store the original, ungrouped set for diagnosis
-                cmdset.merged_from = cmdsets
+                cmdset = yield resolve_cmdsets(entries)
                 # cache; evict oldest entry if full
                 _CMDSET_MERGE_CACHE[mergehash] = cmdset
                 if len(_CMDSET_MERGE_CACHE) > _CMDSET_MERGE_CACHE_MAXSIZE:
@@ -528,36 +510,20 @@ def get_and_merge_cmdsets(
         @inlineCallbacks
         def _expand_cached(cached):
             """
-            Helper method; Rebuild the flat cmdset list from a cached gather
-            and merge it, re-applying the duplicates handling that the
-            original gather performed on the live, shared cmdsets and
-            re-evaluating any ("dynamic", obj) segments per input.
+            Helper method; Rebuild the flat (cmdset, source) list from a
+            cached gather and resolve it, re-evaluating any ("dynamic", obj)
+            segments per input.
 
             """
-            object_cmdsets = []
-            to_restore = []
-
-            def _add_local(csets):
-                for cset in csets:
-                    to_restore.append((cset, cset.duplicates))
-                    cset.old_duplicates = cset.duplicates
-                    cset.duplicates = True if cset.duplicates is None else cset.duplicates
-                    object_cmdsets.append(cset)
-
-            try:
-                for kind, payload in cached.segments:
-                    if kind == "provider":
-                        object_cmdsets.extend(payload)
-                    elif kind == "local":
-                        _add_local(payload)
-                    else:
-                        # ("dynamic", obj)
-                        dyn_cmdsets = yield _get_dynamic_obj_cmdsets(payload, cached.no_exits)
-                        _add_local(dyn_cmdsets)
-                cmdset = yield _weed_and_merge(object_cmdsets)
-            finally:
-                for cset, old_duplicates in to_restore:
-                    cset.duplicates = old_duplicates
+            entries = []
+            for kind, payload in cached.segments:
+                if kind in ("provider", "local"):
+                    entries.extend(payload)
+                else:
+                    # ("dynamic", obj)
+                    dyn_entries = yield _get_dynamic_obj_cmdsets(payload, cached.no_exits)
+                    entries.extend(dyn_entries)
+            cmdset = yield _weed_and_resolve(entries)
             return cmdset
 
         # fast path: reuse the cached gather if no engine event invalidated it
@@ -585,19 +551,23 @@ def get_and_merge_cmdsets(
             start_vector = cmdsetcache.snapshot_vector(cmdset_providers, build_location)
             cacheable = not any(cmdsetcache.is_dynamic(provider) for provider in cmdset_providers)
 
-        local_obj_cmdsets = []
         gate_no_objs = gate_no_exits = None
 
         current_cmdset = CmdSet()
+        provider_currents = []
         object_cmdsets = list()
         for cmdobj in cmdset_providers:
             current, cur_cmdsets = yield _get_cmdsets(cmdobj, current_cmdset)
             if current:
-                current_cmdset = current_cmdset + current
+                # the merged-so-far context handed to the at_cmdset_get hooks
+                provider_currents.append((current, cmdobj))
+                current_cmdset = resolve_cmdsets(provider_currents)
             if cur_cmdsets:
-                object_cmdsets += cur_cmdsets
+                object_cmdsets += [(cmdset, cmdobj) for cmdset in cur_cmdsets]
             if use_gather_cache:
-                segments.append(("provider", tuple(cur_cmdsets or ())))
+                segments.append(
+                    ("provider", tuple((cmdset, cmdobj) for cmdset in cur_cmdsets or ()))
+                )
             match cmdobj.cmdset_provider_type:
                 case "object":
                     gate_no_objs = current.no_objs
@@ -607,7 +577,9 @@ def get_and_merge_cmdsets(
                         if current.no_exits:
                             # filter out all exits
                             local_obj_cmdsets = [
-                                cmdset for cmdset in local_obj_cmdsets if cmdset.key != "ExitCmdSet"
+                                (cmdset, source)
+                                for cmdset, source in local_obj_cmdsets
+                                if cmdset.key != "ExitCmdSet"
                             ]
                         object_cmdsets += local_obj_cmdsets
                         if use_gather_cache:
@@ -619,8 +591,8 @@ def get_and_merge_cmdsets(
                                         (
                                             kind,
                                             tuple(
-                                                cmdset
-                                                for cmdset in payload
+                                                (cmdset, source)
+                                                for cmdset, source in payload
                                                 if cmdset.key != "ExitCmdSet"
                                             ),
                                         )
@@ -628,16 +600,11 @@ def get_and_merge_cmdsets(
                                 else:
                                     segments.append((kind, tuple(payload)))
 
-        cmdset = yield _weed_and_merge(object_cmdsets)
+        cmdset = yield _weed_and_resolve(object_cmdsets)
 
-        for cset in (cset for cset in local_obj_cmdsets if cset):
-            cset.duplicates = cset.old_duplicates
-        # important - this syncs the CmdSetHandler's .current field with the
-        # true current cmdset!
-        # TODO - removed because this causes cmdset overlaps across sessions/accounts
-        # - see https://github.com/evennia/evennia/issues/2855
-        # if cmdset:
-        #     caller.cmdset.current = cmdset
+        # note: we deliberately do not sync CmdSetHandler's .current here -
+        # that causes cmdset overlaps across sessions/accounts, see
+        # https://github.com/evennia/evennia/issues/2855
 
         if use_gather_cache and cacheable:
             # only store if nothing was invalidated while we gathered (e.g. an
