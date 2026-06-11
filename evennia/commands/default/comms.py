@@ -18,7 +18,7 @@ from evennia.locks.lockhandler import LockException
 from evennia.utils import create, logger, search, utils
 from evennia.utils.evmenu import ask_yes_no
 from evennia.utils.logger import tail_log_file
-from evennia.utils.utils import class_from_module, strip_unsafe_input
+from evennia.utils.utils import class_from_module
 
 COMMAND_DEFAULT_CLASS = class_from_module(settings.COMMAND_DEFAULT_CLASS)
 CHANNEL_DEFAULT_TYPECLASS = class_from_module(
@@ -89,7 +89,7 @@ class CmdChannel(COMMAND_DEFAULT_CLASS):
         public Hello World
         pub Hello World
 
-    (this shortcut doesn't work for aliases containing spaces)
+    (this also works for channel names and aliases containing spaces)
 
     See channel/alias for help on setting channel aliases.
 
@@ -109,11 +109,7 @@ class CmdChannel(COMMAND_DEFAULT_CLASS):
         warrior Hello
         wguild Hello
         warchannel Hello
-
-    Note that this will not work if the alias has a space in it. So the
-    'warrior guild' alias must be used with the `channel` command:
-
-        channel warrior guild = Hello
+        warrior guild Hello
 
     Channel-aliases can be removed one at a time, using the '/unalias' switch.
 
@@ -155,7 +151,7 @@ class CmdChannel(COMMAND_DEFAULT_CLASS):
 
     Muting silences all output from the channel without actually
     un-subscribing. Other channel members will see that you are muted in the /who
-    list. Sending a message to the channel will automatically unmute you.
+    list.
 
     ## create and destroy
 
@@ -302,8 +298,8 @@ class CmdChannel(COMMAND_DEFAULT_CLASS):
 
     def msg_channel(self, channel, message, **kwargs):
         """
-        Send a message to a given channel. This will check the 'send'
-        permission on the channel.
+        Send a message to a given channel. This delegates to
+        `channel.send`, which checks the 'send' permission on the channel.
 
         Args:
             channel (Channel): The channel to send to.
@@ -312,14 +308,7 @@ class CmdChannel(COMMAND_DEFAULT_CLASS):
                 all channel messaging hooks for custom overriding.
 
         """
-        if not channel.access(self.caller, "send"):
-            self.msg(f"You are not allowed to send messages to channel {channel}")
-            return
-
-        # avoid unsafe tokens in message
-        message = strip_unsafe_input(message, self.session)
-
-        channel.msg(message, senders=self.caller, **kwargs)
+        channel.send(self.caller, message, session=self.session, **kwargs)
 
     def get_channel_history(self, channel, start_index=0):
         """
@@ -400,17 +389,9 @@ class CmdChannel(COMMAND_DEFAULT_CLASS):
             **kwargs: If given, passed into nicks.add.
 
         Note:
-            We add two nicks - one is a plain `alias -> channel.key` that
-            we need to be able to reference this channel easily. The other
-            is a templated nick to easily be able to send messages to the
-            channel without needing to give the full `channel` command. The
-            structure of this nick is given by `self.channel_msg_pattern`
-            and `self.channel_msg_nick_replacement`. By default it maps
-            `alias <msg> -> channel <channelname> = <msg>`, so that you can
-            for example just write `pub Hello` to send a message.
-
-            The alias created is `alias $1 -> channel channel = $1`, to allow
-            for sending to channel using the main channel command.
+            This adds a "channel"-category nick `alias -> channel.key`. The
+            channel fallback resolver and channel-command lookups consult it,
+            so `pub Hello` sends to the channel directly.
 
         """
         channel.add_user_channel_alias(self.caller, alias, **kwargs)

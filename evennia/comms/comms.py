@@ -14,7 +14,7 @@ from evennia.comms.models import ChannelDB
 from evennia.objects.objects import DefaultObject
 from evennia.typeclasses.models import TypeclassBase
 from evennia.utils import create, logger
-from evennia.utils.utils import inherits_from, make_iter
+from evennia.utils.utils import inherits_from, make_iter, strip_unsafe_input
 
 
 class DefaultChannel(ChannelDB, metaclass=TypeclassBase):
@@ -35,21 +35,13 @@ class DefaultChannel(ChannelDB, metaclass=TypeclassBase):
       in front of every channel message; use `{channelmessage}` token to insert the
       name of the current channel. Set to `None` if you want no prefix (or want to
       handle it in a hook during message generation instead.
-    - `channel_msg_nick_pattern`(str, default `"{alias}\s*?|{alias}\s+?(?P<arg1>.+?)") -
-      this is what used when a channel subscriber gets a channel nick assigned to this
-      channel. The nickhandler uses the pattern to pick out this channel's name from user
-      input. The `{alias}` token will get both the channel's key and any set/custom aliases
-      per subscriber. You need to allow for an `<arg1>` regex group to catch any message
-      that should be send to the  channel. You usually don't need to change this pattern
-      unless you are changing channel command-style entirely.
-    - `channel_msg_nick_replacement` (str, default `"channel {channelname} = $1"` - this
-      is used by the nickhandler to generate a replacement string once the nickhandler (using
-      the `channel_msg_nick_pattern`) identifies that the channel should be addressed
-      to send a message to it. The `<arg1>` regex pattern match from `channel_msg_nick_pattern`
-      will end up at the `$1` position in the replacement. Together, this allows you do e.g.
-      'public Hello' and have that become a mapping to `channel public = Hello`. By default,
-      the account-level `channel` command is used. If you were to rename that command you must
-      tweak the output to something like `yourchannelcommandname {channelname} = $1`.
+
+    Channels are not commands: when input matches no command, the channel
+    fallback resolver (see `evennia.commands.fallbacks`) matches it against
+    the keys, aliases and personal channel-nicks of the channels the caller
+    subscribes to and calls `send()` on the match - so `public Hello` sends
+    to the channel directly. Override `send` to change how user-level sends
+    are initiated.
 
     * Properties:
         mutelist
@@ -72,6 +64,9 @@ class DefaultChannel(ChannelDB, metaclass=TypeclassBase):
         msg(msgobj, header=None, senders=None, sender_strings=None,
             persistent=None, online=False, emit=False, external=False) - main
                 send method, builds and sends a new message to channel.
+        send(sender, message) - user-level send entry point; checks the
+                'send' lock and delivers via msg(). Used by the channel
+                fallback resolver and the channel command.
         tempmsg(msg, header=None, senders=None) - wrapper for sending non-persistent
                 messages.
         distribute_message(msg, online=False) - send a message to all
@@ -130,10 +125,6 @@ class DefaultChannel(ChannelDB, metaclass=TypeclassBase):
     # which prefix to use when showing were a message is coming from. Set to
     # None to disable and set this later.
     channel_prefix_string = "[{channelname}] "
-
-    # default nick-alias replacements (default using the 'channel' command)
-    channel_msg_nick_pattern = r"{alias}\s*?|{alias}\s+?(?P<arg1>.+?)"
-    channel_msg_nick_replacement = "@channel {channelname} = $1"
 
     # --- Creation configuration ---
     _creation_hook_name = "at_channel_creation"
@@ -509,36 +500,13 @@ class DefaultChannel(ChannelDB, metaclass=TypeclassBase):
             alias (str): The desired alias.
 
         Note:
-            This is tightly coupled to the default `channel` command. If you
-            change that, you need to change this as well.
-
-            We add two nicks - one is a plain `alias -> channel.key` that
-            users need to be able to reference this channel easily. The other
-            is a templated nick to easily be able to send messages to the
-            channel without needing to give the full `channel` command. The
-            structure of this nick is given by `self.channel_msg_nick_pattern`
-            and `self.channel_msg_nick_replacement`. By default it maps
-            `alias <msg> -> channel <channelname> = <msg>`, so that you can
-            for example just write `pub Hello` to send a message.
-
-            The alias created is `alias $1 -> channel channel = $1`, to allow
-            for sending to channel using the main channel command.
+            This adds a single "channel"-category nick `alias -> channel.key`.
+            The channel fallback resolver and channel-command lookups consult
+            it, so the alias works both for sending (`alias <msg>`) and for
+            referencing the channel in the channel command.
 
         """
         chan_key = self.key.lower()
-
-        # the message-pattern allows us to type the channel on its own without
-        # needing to use the `channel` command explicitly.
-        msg_nick_pattern = self.channel_msg_nick_pattern.format(alias=re.escape(alias))
-        msg_nick_replacement = self.channel_msg_nick_replacement.format(channelname=chan_key)
-        user.nicks.add(
-            msg_nick_pattern,
-            msg_nick_replacement,
-            category="inputline",
-            pattern_is_regex=True,
-            **kwargs,
-        )
-
         if chan_key != alias:
             # this allows for using the alias for general channel lookups
             user.nicks.add(alias, chan_key, category="channel", **kwargs)
@@ -555,21 +523,20 @@ class DefaultChannel(ChannelDB, metaclass=TypeclassBase):
                 into a custom implementation.
 
         Notes:
-            The channel-alias actually consists of two aliases - one
-            channel-based one for searching channels with the alias and one
-            inputline one for doing the 'channelalias msg' - call.
-
             This is a classmethod because it doesn't actually operate on the
             channel instance.
 
-            It sits on the channel because the nick structure for this is
-            pretty complex and needs to be located in a central place (rather
-            on, say, the channel command).
-
         """
         user.nicks.remove(alias, category="channel", **kwargs)
-        msg_nick_pattern = cls.channel_msg_nick_pattern.format(alias=alias)
-        user.nicks.remove(msg_nick_pattern, category="inputline", **kwargs)
+        # lazy cleanup of the legacy inputline send-nicks that subscribing
+        # used to create before channels resolved via the fallback pipeline;
+        # both spellings are tried since add escaped the alias but remove
+        # did not. nicks.remove quietly ignores missing nicks.
+        legacy_pattern = r"{alias}\s*?|{alias}\s+?(?P<arg1>.+?)"
+        user.nicks.remove(
+            legacy_pattern.format(alias=re.escape(alias)), category="inputline", **kwargs
+        )
+        user.nicks.remove(legacy_pattern.format(alias=alias), category="inputline", **kwargs)
 
     def at_pre_msg(self, message, **kwargs):
         """
@@ -651,6 +618,34 @@ class DefaultChannel(ChannelDB, metaclass=TypeclassBase):
 
         # post-send hook
         self.at_post_msg(message, **send_kwargs)
+
+    def send(self, sender, message, session=None, **kwargs):
+        """
+        Public entry point for a user-level send to this channel (mirrors
+        `DefaultExit.traverse`). This is what the channel fallback resolver
+        calls when input matches this channel's name or an alias, and what
+        the `channel` command delegates to.
+
+        Checks the 'send' lock (messaging the failure to `sender`), strips
+        unsafe input tokens, then delivers via `self.msg`.
+
+        Args:
+            sender (Object or Account): The entity sending; becomes `senders`.
+            message (str): The message to send.
+            session (Session, optional): Used for the unsafe-token perm check
+                and for routing the lock-failure message.
+            **kwargs: Passed into `self.msg` (and on to the messaging hooks).
+
+        Returns:
+            bool: False if the send lock denied the send, True otherwise.
+
+        """
+        if not self.access(sender, "send"):
+            sender.msg(f"You are not allowed to send messages to channel {self}", session=session)
+            return False
+        message = strip_unsafe_input(message, session)
+        self.msg(message, senders=sender, **kwargs)
+        return True
 
     def at_post_msg(self, message, **kwargs):
         """

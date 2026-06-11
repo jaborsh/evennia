@@ -1245,8 +1245,7 @@ class DefaultAccount(AccountDB, metaclass=TypeclassBase):
         """
         Do something as this account. This method is never called normally,
         but only when the account object itself is supposed to execute the
-        command. It takes account nicks into account, but not nicks of
-        eventual puppets.
+        command.
 
         Args:
             raw_string (str): Raw command input coming from the command line.
@@ -1265,9 +1264,6 @@ class DefaultAccount(AccountDB, metaclass=TypeclassBase):
         global _CMDHANDLER
         if not _CMDHANDLER:
             from evennia.commands.cmdhandler import cmdhandler as _CMDHANDLER
-        raw_string = self.nicks.nickreplace(
-            raw_string, categories=("inputline", "channel"), include_account=False
-        )
         if not session and _MULTISESSION_MODE in (0, 1):
             # for these modes we use the first/only session
             sessions = self.sessions.get()

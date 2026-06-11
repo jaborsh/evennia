@@ -33,21 +33,13 @@ class Channel(DefaultChannel):
       in front of every channel message; use `{channelmessage}` token to insert the
       name of the current channel. Set to `None` if you want no prefix (or want to
       handle it in a hook during message generation instead.
-    - `channel_msg_nick_pattern`(str, default `"{alias}\s*?|{alias}\s+?(?P<arg1>.+?)") -
-      this is what used when a channel subscriber gets a channel nick assigned to this
-      channel. The nickhandler uses the pattern to pick out this channel's name from user
-      input. The `{alias}` token will get both the channel's key and any set/custom aliases
-      per subscriber. You need to allow for an `<arg1>` regex group to catch any message
-      that should be send to the  channel. You usually don't need to change this pattern
-      unless you are changing channel command-style entirely.
-    - `channel_msg_nick_replacement` (str, default `"channel {channelname} = $1"` - this
-      is used by the nickhandler to generate a replacement string once the nickhandler (using
-      the `channel_msg_nick_pattern`) identifies that the channel should be addressed
-      to send a message to it. The `<arg1>` regex pattern match from `channel_msg_nick_pattern`
-      will end up at the `$1` position in the replacement. Together, this allows you do e.g.
-      'public Hello' and have that become a mapping to `channel public = Hello`. By default,
-      the account-level `channel` command is used. If you were to rename that command you must
-      tweak the output to something like `yourchannelcommandname {channelname} = $1`.
+
+    Channels are not commands: when input matches no command, the channel
+    fallback resolver (see `evennia.commands.fallbacks`) matches it against
+    the keys, aliases and personal channel-nicks of the channels the caller
+    subscribes to and calls `send()` on the match - so `public Hello` sends
+    to the channel directly. Override `send` to change how user-level sends
+    are initiated.
 
     * Properties:
         mutelist

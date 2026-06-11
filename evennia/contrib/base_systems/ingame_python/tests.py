@@ -9,7 +9,6 @@ from mock import Mock
 
 from evennia import ScriptDB
 from evennia.commands.default.tests import BaseEvenniaCommandTest
-from evennia.objects.objects import ExitCommand
 from evennia.utils import ansi, utils
 from evennia.utils.create import create_object, create_script
 from evennia.utils.test_resources import BaseEvenniaTest
@@ -460,6 +459,21 @@ class TestDefaultCallbacks(BaseEvenniaCommandTest):
         CallbackHandler.script = None
         super().tearDown()
 
+    def _traverse(self, exit_obj, char):
+        """Traverse exit_obj as char, returning the text sent to char."""
+        old_msg = char.msg
+        try:
+            char.msg = Mock()
+            exit_obj.traverse(char)
+            stored_msg = [
+                args[0] if args and args[0] else kwargs.get("text", utils.to_str(kwargs))
+                for name, args, kwargs in char.msg.mock_calls
+            ]
+            stored_msg = [smsg[0] if isinstance(smsg, tuple) else smsg for smsg in stored_msg]
+            return ansi.parse_ansi("\n".join(stored_msg), strip_ansi=True)
+        finally:
+            char.msg = old_msg
+
     def test_exit(self):
         """Test the callbacks of an exit."""
         self.char1.key = "char1"
@@ -477,11 +491,11 @@ class TestDefaultCallbacks(BaseEvenniaCommandTest):
         self.handler.add_callback(self.exit, "can_traverse", code, author=self.char1, valid=True)
 
         # Have char1 move through the exit
-        self.call(ExitCommand(), "", "You can leave.", obj=self.exit)
+        self.assertIn("You can leave.", self._traverse(self.exit, self.char1))
         self.assertIs(self.char1.location, self.room2)
 
         # Have char2 move through this exit
-        self.call(ExitCommand(), "", "You cannot leave.", obj=self.exit, caller=self.char2)
+        self.assertIn("You cannot leave.", self._traverse(self.exit, self.char2))
         self.assertIs(self.char2.location, self.room1)
 
         # Try the traverse callback
@@ -491,7 +505,7 @@ class TestDefaultCallbacks(BaseEvenniaCommandTest):
         )
 
         # Have char2 move through the exit
-        self.call(ExitCommand(), "", obj=self.exit, caller=self.char2)
+        self._traverse(self.exit, self.char2)
         self.assertIs(self.char2.location, self.room2)
         self.handler.del_callback(self.exit, "traverse", 0)
 
@@ -507,7 +521,7 @@ class TestDefaultCallbacks(BaseEvenniaCommandTest):
         old_msg = self.char2.msg
         try:
             self.char2.msg = Mock()
-            self.call(ExitCommand(), "", obj=self.exit)
+            self.exit.traverse(self.char1)
             stored_msg = [
                 args[0] if args and args[0] else kwargs.get("text", utils.to_str(kwargs))
                 for name, args, kwargs in self.char2.msg.mock_calls
@@ -533,7 +547,7 @@ class TestDefaultCallbacks(BaseEvenniaCommandTest):
         old_msg = self.char2.msg
         try:
             self.char2.msg = Mock()
-            self.call(ExitCommand(), "", obj=back)
+            back.traverse(self.char1)
             stored_msg = [
                 args[0] if args and args[0] else kwargs.get("text", utils.to_str(kwargs))
                 for name, args, kwargs in self.char2.msg.mock_calls
