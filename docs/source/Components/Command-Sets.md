@@ -227,6 +227,43 @@ cmdsets on them can only be accessed by themselves, not by other objects around 
 example might be to lock an object with `call:inside()` to only make their commands available to
 objects inside them, or `cmd:holds()` to make their commands available only if they are held.
 
+### The cmdset gather cache
+
+Collecting the cmdsets above is expensive - it means checking the `call` lock and calling the
+`at_cmdset_get` hook of every object in the room and inventory, for every command input. Since the
+result rarely changes between inputs, Evennia caches the gathered cmdsets per calling
+session/account/object and reuses them until an engine event invalidates the cache (controlled by
+the `CMDSET_GATHER_CACHE` setting, default `True`). The cache is invalidated automatically by
+everything that normally changes which cmdsets apply:
+
+- cmdset changes through the cmdset handler (`obj.cmdset.add/remove/clear/...`), including those made
+  by [EvMenu](./EvMenu.md) and EvEditor
+- objects moving in or out of the location or inventory
+- [lock](./Locks.md) and permission changes
+- puppeting/unpuppeting, login/logout and `quell`/`unquell`
+- object deletion, typeclass swaps and renames
+- server `reload` (the cache is memory-only and never survives a restart)
+
+Adding commands directly to a live `CmdSet` instance (like `cmdset.add(cmd)` on a stacked set) also
+shows up on the next input without any of the events above - the merge step re-reads each cmdset's
+content fingerprint every time.
+
+Two things change meaning when the cache is active:
+
+- The `at_cmdset_get` hook of surrounding objects runs when the cache is (re)built, not on every
+  command input. If your hook mutates the object's cmdsets per input, set `cmdset_dynamic = True` on
+  its typeclass - such objects get their `call` lock, hook and cmdsets re-evaluated on every input
+  while the rest of the gather stays cached. Setting `cmdset_dynamic = True` on a Session, Account or
+  puppeted Object instead disables gather-caching entirely for every caller it serves.
+- The `call` lock of surrounding objects is likewise checked at rebuild time. Lock *edits* are picked
+  up automatically (see above), but a lock whose *outcome* depends on un-tracked state - like
+  `attr()`, `holds()` or time-based locks - will not flip until some other event triggers a rebuild.
+  Either set `cmdset_dynamic = True` on the locked object, or call `obj.cmdset.invalidate_caches()`
+  yourself when the relevant state changes.
+
+Setting `CMDSET_GATHER_CACHE = False` restores the previous behavior of re-gathering everything on
+every input.
+
 ## Adding and Merging Command Sets
 
 *Note: This is an advanced topic. It's very useful to know about, but you might want to skip it if

@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from django.test import override_settings
 
-from evennia.commands import cmdparser
+from evennia.commands import cmdparser, cmdsetcache
 from evennia.commands.cmdset import CmdSet
 from evennia.commands.command import Command
 from evennia.utils.test_resources import BaseEvenniaTest, TestCase
@@ -1034,7 +1034,10 @@ import sys
 
 from twisted.trial.unittest import TestCase as TwistedTestCase
 
+import evennia
 from evennia.commands import cmdhandler
+from evennia.server.sessionhandler import ServerSessionHandler
+from evennia.utils.idmapper.models import flush_cache as idmapper_flush_cache
 
 
 def _mockdelay(time, func, *args, **kwargs):
@@ -1587,3 +1590,540 @@ class TestCmdSetMergeObjBindings(TestCase):
         self.assertEqual(len(merged2.commands), 2)
         keys = {cmd.key for cmd in merged2.commands}
         self.assertNotIn("b", keys)
+
+
+class _CacheEntity:
+    """Bare stand-in for a session/account/object in gather-cache tests."""
+
+    cmdset_provider_type = "session"
+    cmdset_dynamic = False
+
+    def __init__(self, provider_type=None, location=None):
+        if provider_type:
+            self.cmdset_provider_type = provider_type
+        self.location = location
+
+
+class TestCmdsetCachePrimitives(TestCase):
+    """Test the version-counter cache primitives in cmdsetcache."""
+
+    def _chain(self):
+        """Build a session/account/object provider chain with a location."""
+        room = _CacheEntity(provider_type="room")
+        session = _CacheEntity()
+        account = _CacheEntity(provider_type="account")
+        puppet = _CacheEntity(provider_type="object", location=room)
+        return [session, account, puppet], room
+
+    def _build_cached(self, providers, location):
+        vector = cmdsetcache.snapshot_vector(providers, location)
+        return cmdsetcache.CachedGather(
+            cmdsetcache.get_epoch(), tuple(providers), location, vector, ()
+        )
+
+    def test_version_bumps(self):
+        entity = _CacheEntity()
+        self.assertEqual(cmdsetcache.get_version(entity), 0)
+        cmdsetcache.invalidate(entity)
+        cmdsetcache.invalidate(entity)
+        self.assertEqual(cmdsetcache.get_version(entity), 2)
+
+    def test_invalidate_neighborhood(self):
+        room = _CacheEntity()
+        obj = _CacheEntity(location=room)
+        cmdsetcache.invalidate_neighborhood(obj)
+        self.assertEqual(cmdsetcache.get_version(obj), 1)
+        self.assertEqual(cmdsetcache.get_version(room), 1)
+        # without a location (location=None routes through invalidate(None))
+        lone = _CacheEntity()
+        cmdsetcache.invalidate_neighborhood(lone)
+        self.assertEqual(cmdsetcache.get_version(lone), 1)
+
+    def test_is_dynamic(self):
+        entity = _CacheEntity()
+        self.assertFalse(cmdsetcache.is_dynamic(entity))
+        entity.cmdset_dynamic = True
+        self.assertTrue(cmdsetcache.is_dynamic(entity))
+
+    def test_vectors_equal(self):
+        providers, room = self._chain()
+        vector_a = cmdsetcache.snapshot_vector(providers, room)
+        vector_b = cmdsetcache.snapshot_vector(providers, room)
+        self.assertTrue(cmdsetcache.vectors_equal(vector_a, vector_b))
+        cmdsetcache.invalidate(room)
+        vector_c = cmdsetcache.snapshot_vector(providers, room)
+        self.assertFalse(cmdsetcache.vectors_equal(vector_a, vector_c))
+
+    def test_store_and_get_roundtrip(self):
+        providers, room = self._chain()
+        holder = providers[-1]
+        cached = self._build_cached(providers, room)
+        cmdsetcache.store_cached(holder, providers, cached)
+        self.assertIs(cmdsetcache.get_cached(holder, providers), cached)
+
+    def test_get_rejects_epoch_change(self):
+        providers, room = self._chain()
+        holder = providers[-1]
+        cmdsetcache.store_cached(holder, providers, self._build_cached(providers, room))
+        cmdsetcache.invalidate_all()
+        self.assertIsNone(cmdsetcache.get_cached(holder, providers))
+
+    def test_get_rejects_provider_replacement(self):
+        providers, room = self._chain()
+        holder = providers[-1]
+        cmdsetcache.store_cached(holder, providers, self._build_cached(providers, room))
+        replaced = [_CacheEntity(), providers[1], providers[2]]
+        self.assertIsNone(cmdsetcache.get_cached(holder, replaced))
+
+    def test_get_rejects_location_change(self):
+        providers, room = self._chain()
+        holder = providers[-1]
+        cmdsetcache.store_cached(holder, providers, self._build_cached(providers, room))
+        holder.location = _CacheEntity()
+        self.assertIsNone(cmdsetcache.get_cached(holder, providers))
+
+    def test_get_rejects_version_bumps(self):
+        for bump_target in ("provider", "location"):
+            providers, room = self._chain()
+            holder = providers[-1]
+            cmdsetcache.store_cached(holder, providers, self._build_cached(providers, room))
+            cmdsetcache.invalidate(providers[1] if bump_target == "provider" else room)
+            self.assertIsNone(
+                cmdsetcache.get_cached(holder, providers), f"stale hit after {bump_target} bump"
+            )
+
+    def test_store_eviction_cap(self):
+        providers, room = self._chain()
+        holder = providers[-1]
+        first = providers
+        cmdsetcache.store_cached(holder, first, self._build_cached(first, room))
+        for _ in range(cmdsetcache._MAX_CACHE_ENTRIES):
+            extra = [_CacheEntity(), providers[1], providers[2]]
+            cmdsetcache.store_cached(holder, extra, self._build_cached(extra, room))
+        self.assertEqual(len(holder._cmdset_gather_cache), cmdsetcache._MAX_CACHE_ENTRIES)
+        # the oldest entry (the first chain) was evicted
+        self.assertIsNone(cmdsetcache.get_cached(holder, first))
+
+
+class _GatherCacheTestMixin:
+    """Helpers shared by the gather-cache test classes."""
+
+    def setUp(self):
+        self.patch(sys.modules["evennia.server.sessionhandler"], "delay", _mockdelay)
+        super().setUp()
+
+    def _gather(self, caller, providers=None):
+        """Run get_and_merge_cmdsets; everything fires synchronously here."""
+        result = []
+        cmdhandler.get_and_merge_cmdsets(
+            caller,
+            [caller] if providers is None else providers,
+            caller.cmdset_provider_type,
+            "",
+        ).addCallback(result.append)
+        self.assertTrue(result, "gather did not complete synchronously")
+        return result[0]
+
+    def _spy_hook(self, obj):
+        """Replace obj.at_cmdset_get with a recording wrapper."""
+        calls = []
+        original = obj.at_cmdset_get
+
+        def _spy(**kwargs):
+            calls.append(kwargs)
+            return original(**kwargs)
+
+        obj.at_cmdset_get = _spy
+        return calls
+
+    def _prime(self, caller, providers=None):
+        """Gather twice; the second pass is free of lazy-init bumps and stores."""
+        self._gather(caller, providers)
+        return self._gather(caller, providers)
+
+    def _keys(self, merged):
+        """Get the command keys of a merged cmdset."""
+        return [cmd.key for cmd in merged.commands]
+
+
+class TestCmdsetGatherCache(_GatherCacheTestMixin, TwistedTestCase, BaseEvenniaTest):
+    """
+    Test the event-invalidated gather cache through get_and_merge_cmdsets.
+
+    """
+
+    def test_cache_hit_skips_local_walk(self):
+        self._prime(self.obj1)
+        self.assertIsNotNone(cmdsetcache.get_cached(self.obj1, [self.obj1]))
+        calls = self._spy_hook(self.room1)
+        self._gather(self.obj1)
+        self.assertEqual(len(calls), 0, "cache hit still ran the local-object walk")
+
+    @override_settings(CMDSET_GATHER_CACHE=False)
+    def test_flag_off_walks_every_time(self):
+        calls = self._spy_hook(self.room1)
+        self._gather(self.obj1)
+        self._gather(self.obj1)
+        self.assertEqual(len(calls), 2)
+        self.assertFalse(hasattr(self.obj1, "_cmdset_gather_cache"))
+
+    def test_own_cmdset_change_immediately_visible(self):
+        self._prime(self.obj1)
+        self.obj1.cmdset.add(_CmdSetA())
+        merged = self._gather(self.obj1)
+        self.assertIn("a", [cmd.key for cmd in merged.commands])
+        self.obj1.cmdset.remove(_CmdSetA)
+        merged = self._gather(self.obj1)
+        self.assertNotIn("a", [cmd.key for cmd in merged.commands])
+
+    def test_neighbor_cmdset_change_invalidates(self):
+        self._prime(self.obj1)
+        self.obj2.cmdset.add(_CmdSetB())
+        merged = self._gather(self.obj1)
+        self.assertIn("b", [cmd.key for cmd in merged.commands])
+        self.obj2.cmdset.remove(_CmdSetB)
+        merged = self._gather(self.obj1)
+        self.assertNotIn("b", [cmd.key for cmd in merged.commands])
+
+    def test_neighbor_move_invalidates(self):
+        self.obj2.cmdset.add(_CmdSetB())
+        self._prime(self.obj1)
+        merged = self._gather(self.obj1)
+        self.assertIn("b", [cmd.key for cmd in merged.commands])
+        self.obj2.location = self.room2
+        merged = self._gather(self.obj1)
+        self.assertNotIn("b", [cmd.key for cmd in merged.commands])
+
+    def test_live_cmdset_mutation_needs_no_event(self):
+        # mutating a stacked CmdSet directly fires no engine event; it must
+        # still be picked up via the per-input fingerprint recomputation
+        self.obj2.cmdset.add(_CmdSetC())
+        self._prime(self.obj1)
+        merged = self._gather(self.obj1)
+        self.assertNotIn("d", [cmd.key for cmd in merged.commands])
+        stacked = self.obj2.cmdset.cmdset_stack[-1]
+        stacked.add(_CmdD("live"))
+        merged = self._gather(self.obj1)
+        self.assertIn("d", [cmd.key for cmd in merged.commands])
+
+    def test_duplicates_parity_and_restore(self):
+        # same-key commands on two different room objects must stay separate
+        # (duplicates handling) on both the build and the cached path, and the
+        # mutated duplicates flag must be restored after every gather
+        self.obj2.cmdset.add(_CmdSetB())
+        self.room1.cmdset.add(_CmdSetB())
+        built = self._prime(self.obj1)
+        count_built = sum(1 for cmd in built.commands if cmd.key == "b")
+        self.assertEqual(count_built, 2)
+        self.assertIsNone(self.obj2.cmdset.cmdset_stack[-1].duplicates)
+        cached = self._gather(self.obj1)
+        count_cached = sum(1 for cmd in cached.commands if cmd.key == "b")
+        self.assertEqual(count_built, count_cached)
+        self.assertIsNone(self.obj2.cmdset.cmdset_stack[-1].duplicates)
+
+
+class TestCmdsetGatherCacheInvalidation(_GatherCacheTestMixin, TwistedTestCase, BaseEvenniaTest):
+    """
+    Test that engine events beyond cmdset mutations and movement invalidate
+    cached gathers: lock and permission changes, quelling, puppeting,
+    login/disconnect, idmapper flushes, renames and typeclass swaps.
+
+    """
+
+    def _puppet_chain(self):
+        """Puppet char1 through the test session and return its provider chain."""
+        self.account.puppet_object(self.session, self.char1)
+        _, providers, _, _, _ = cmdhandler.generate_cmdset_providers(
+            self.char1, session=self.session
+        )
+        return providers
+
+    def test_lock_edit_flips_call_inclusion(self):
+        self.obj2.cmdset.add(_CmdSetB())
+        self._prime(self.obj1)
+        self.assertIn("b", self._keys(self._gather(self.obj1)))
+        self.obj2.locks.add("call:false()")
+        self.assertNotIn("b", self._keys(self._gather(self.obj1)))
+        self.obj2.locks.add("call:true()")
+        self.assertIn("b", self._keys(self._gather(self.obj1)))
+
+    def test_permission_change_invalidates(self):
+        self.obj2.cmdset.add(_CmdSetB())
+        self.obj2.locks.add("call:perm(Builder)")
+        self._prime(self.obj1)
+        self.assertNotIn("b", self._keys(self._gather(self.obj1)))
+        self.obj1.permissions.add("Builder")
+        self.assertIn("b", self._keys(self._gather(self.obj1)))
+        self.obj1.permissions.remove("Builder")
+        self.assertNotIn("b", self._keys(self._gather(self.obj1)))
+
+    def test_quell_invalidates(self):
+        # CmdQuell's mechanics: toggle the _quell attribute, then
+        # locks.reset() on puppet and account (CmdQuell._recache_locks)
+        providers = self._puppet_chain()
+        self.char1.permissions.remove("Developer")
+        self.obj2.cmdset.add(_CmdSetB())
+        self.obj2.locks.add("call:perm(Developer)")
+        self._prime(self.char1, providers)
+        # unquelled, the account's Developer perm applies
+        self.assertIn("b", self._keys(self._gather(self.char1, providers)))
+        self.account.attributes.add("_quell", True)
+        self.char1.locks.reset()
+        self.account.locks.reset()
+        # quelled, the puppet's own (lower) perms apply
+        self.assertNotIn("b", self._keys(self._gather(self.char1, providers)))
+        self.account.attributes.remove("_quell")
+        self.char1.locks.reset()
+        self.account.locks.reset()
+        self.assertIn("b", self._keys(self._gather(self.char1, providers)))
+
+    def test_puppet_and_unpuppet_invalidate(self):
+        providers = self._puppet_chain()
+        self._prime(self.char1, providers)
+        self.assertIsNotNone(cmdsetcache.get_cached(self.char1, providers))
+        self.account.unpuppet_object(self.session)
+        self.assertIsNone(cmdsetcache.get_cached(self.char1, providers))
+
+    def test_distinct_provider_chains_get_distinct_entries(self):
+        # multisession safety: the same holder caches one gather per chain
+        providers = self._puppet_chain()
+        self._prime(self.char1)
+        self._prime(self.char1, providers)
+        self.assertEqual(len(self.char1._cmdset_gather_cache), 2)
+        cmdsetcache.invalidate(self.room1)
+        self.assertIsNone(cmdsetcache.get_cached(self.char1, [self.char1]))
+        self.assertIsNone(cmdsetcache.get_cached(self.char1, providers))
+
+    def test_deletion_invalidates(self):
+        self.obj2.cmdset.add(_CmdSetB())
+        self._prime(self.obj1)
+        self.assertIn("b", self._keys(self._gather(self.obj1)))
+        self.obj2.delete()
+        self.assertNotIn("b", self._keys(self._gather(self.obj1)))
+
+    def test_idmapper_flush_invalidates(self):
+        self._prime(self.obj1)
+        self.assertIsNotNone(cmdsetcache.get_cached(self.obj1, [self.obj1]))
+        self.obj2.flush_from_cache(force=True)
+        self.assertIsNone(cmdsetcache.get_cached(self.obj1, [self.obj1]))
+
+    def test_exit_rename_via_flush_rebuilds(self):
+        # the @name command pattern for exits: rename, then force-flush
+        self._prime(self.char1)
+        self.assertIn("out", self._keys(self._gather(self.char1)))
+        self.exit.key = "north"
+        self.exit.flush_from_cache(force=True)
+        merged = self._gather(self.char1)
+        self.assertIn("north", self._keys(merged))
+        self.assertNotIn("out", self._keys(merged))
+
+    def test_exit_alias_rebuilds(self):
+        # the @alias command pattern for exits: add alias, force_init rebuild
+        self._prime(self.char1)
+        self.exit.aliases.add("n")
+        self.exit.at_cmdset_get(force_init=True)
+        merged = self._gather(self.char1)
+        exit_cmd = [cmd for cmd in merged.commands if cmd.key == "out"][0]
+        self.assertIn("n", exit_cmd.aliases)
+
+    def test_flush_cache_bumps_epoch(self):
+        self._prime(self.obj1)
+        self.assertIsNotNone(cmdsetcache.get_cached(self.obj1, [self.obj1]))
+        epoch = cmdsetcache.get_epoch()
+        idmapper_flush_cache()
+        self.assertEqual(cmdsetcache.get_epoch(), epoch + 1)
+        self.assertIsNone(cmdsetcache.get_cached(self.obj1, [self.obj1]))
+
+    def test_swap_typeclass_invalidates(self):
+        self._prime(self.obj1)
+        self.assertIsNotNone(cmdsetcache.get_cached(self.obj1, [self.obj1]))
+        self.obj2.swap_typeclass("evennia.objects.objects.DefaultObject", run_start_hooks=None)
+        self.assertIsNone(cmdsetcache.get_cached(self.obj1, [self.obj1]))
+
+    def test_login_and_disconnect_invalidate_session(self):
+        version = cmdsetcache.get_version(self.session)
+        evennia.SESSION_HANDLER.login(self.session, self.account, force=True, testmode=True)
+        self.assertGreater(cmdsetcache.get_version(self.session), version)
+        version = cmdsetcache.get_version(self.session)
+        # the fixture mocks out SESSION_HANDLER.disconnect; call the real one
+        ServerSessionHandler.disconnect(evennia.SESSION_HANDLER, self.session, sync_portal=False)
+        self.assertGreater(cmdsetcache.get_version(self.session), version)
+        # put the session back so the fixture teardown finds it
+        evennia.SESSION_HANDLER[self.session.sessid] = self.session
+
+
+class _CmdSetNoExits(CmdSet):
+    key = "NoExits"
+    no_exits = True
+
+
+class _CmdSetNoObjs(CmdSet):
+    key = "NoObjs"
+    no_objs = True
+
+
+class TestCmdsetGatherCacheDynamic(_GatherCacheTestMixin, TwistedTestCase, BaseEvenniaTest):
+    """
+    Test the cmdset_dynamic opt-in: a dynamic local object's contribution
+    (call lock, at_cmdset_get hook and stack) is re-evaluated on every input
+    while the rest of the gather stays cached, whereas a dynamic provider
+    disables gather caching entirely.
+
+    """
+
+    def test_dynamic_object_reevaluated_per_input(self):
+        self.obj2.cmdset_dynamic = True
+        self.obj2.cmdset.add(_CmdSetB())
+        self._prime(self.obj1)
+        # a dynamic local object must not prevent caching the gather
+        self.assertIsNotNone(cmdsetcache.get_cached(self.obj1, [self.obj1]))
+        dynamic_calls = self._spy_hook(self.obj2)
+        static_calls = self._spy_hook(self.room1)
+        self.assertIn("b", self._keys(self._gather(self.obj1)))
+        self.assertIn("b", self._keys(self._gather(self.obj1)))
+        self.assertEqual(len(dynamic_calls), 2, "dynamic object's hook did not run per input")
+        self.assertEqual(len(static_calls), 0, "static object's hook ran on a cache hit")
+
+    def test_dynamic_call_lock_tracks_attribute(self):
+        # the dynamic object is recorded in the cached gather even while its
+        # call lock fails, so the lock can start passing without any event
+        self.obj2.cmdset_dynamic = True
+        self.obj2.cmdset.add(_CmdSetB())
+        self.obj2.locks.add("call:attr(clearance, yes)")
+        self._prime(self.obj1)
+        static_calls = self._spy_hook(self.room1)
+        self.assertNotIn("b", self._keys(self._gather(self.obj1)))
+        # plain Attribute writes fire no engine event; the dynamic object's
+        # call lock must pick them up per input all the same
+        self.obj1.attributes.add("clearance", "yes")
+        self.assertIn("b", self._keys(self._gather(self.obj1)))
+        self.obj1.attributes.remove("clearance")
+        self.assertNotIn("b", self._keys(self._gather(self.obj1)))
+        self.assertEqual(len(static_calls), 0, "attribute write triggered a full rebuild")
+
+    def test_no_exits_gate_applies_to_dynamic(self):
+        self.exit.cmdset_dynamic = True
+        self._prime(self.obj1)
+        self.assertIsNotNone(cmdsetcache.get_cached(self.obj1, [self.obj1]))
+        # the dynamic exit contributes its command on the cached path
+        self.assertIn("out", self._keys(self._gather(self.obj1)))
+        self.obj1.cmdset.add(_CmdSetNoExits())
+        # rebuild path honors the gate ...
+        self.assertNotIn("out", self._keys(self._gather(self.obj1)))
+        self.assertIsNotNone(cmdsetcache.get_cached(self.obj1, [self.obj1]))
+        # ... and so does the per-input dynamic splice on the cached path
+        self.assertNotIn("out", self._keys(self._gather(self.obj1)))
+
+    def test_dynamic_provider_falls_back_to_legacy(self):
+        self.obj1.cmdset_dynamic = True
+        self.obj2.cmdset.add(_CmdSetB())
+        calls = self._spy_hook(self.room1)
+        merged = self._gather(self.obj1)
+        self._gather(self.obj1)
+        self.assertEqual(len(calls), 2, "dynamic provider still cached the gather")
+        self.assertIsNone(cmdsetcache.get_cached(self.obj1, [self.obj1]))
+        with override_settings(CMDSET_GATHER_CACHE=False):
+            legacy = self._gather(self.obj1)
+        self.assertEqual(self._keys(merged), self._keys(legacy))
+
+    def test_duplicates_parity_with_dynamic(self):
+        # same-key commands on a dynamic and a static object must stay
+        # separate on both paths, with the duplicates flag restored after
+        self.obj2.cmdset_dynamic = True
+        self.obj2.cmdset.add(_CmdSetB())
+        self.room1.cmdset.add(_CmdSetB())
+        built = self._prime(self.obj1)
+        self.assertEqual(sum(1 for cmd in built.commands if cmd.key == "b"), 2)
+        self.assertIsNone(self.obj2.cmdset.cmdset_stack[-1].duplicates)
+        cached = self._gather(self.obj1)
+        self.assertEqual(sum(1 for cmd in cached.commands if cmd.key == "b"), 2)
+        self.assertIsNone(self.obj2.cmdset.cmdset_stack[-1].duplicates)
+
+    def test_invalidate_caches_escape_hatch(self):
+        # a static object's call lock freezes between engine events; the
+        # public CmdSetHandler.invalidate_caches() forces a re-gather
+        self.obj2.cmdset.add(_CmdSetB())
+        self.obj2.locks.add("call:attr(clearance, yes)")
+        self._prime(self.obj1)
+        self.assertNotIn("b", self._keys(self._gather(self.obj1)))
+        self.obj1.attributes.add("clearance", "yes")
+        self.assertNotIn("b", self._keys(self._gather(self.obj1)))
+        self.obj2.cmdset.invalidate_caches()
+        self.assertIn("b", self._keys(self._gather(self.obj1)))
+
+
+class TestCmdsetGatherCacheParity(_GatherCacheTestMixin, TwistedTestCase, BaseEvenniaTest):
+    """
+    Sweep one busy scene through repeated gathers, asserting after every
+    scene change that the cached path (build pass and cache hits alike)
+    merges to exactly the same result as the legacy per-input path.
+
+    """
+
+    def _signature(self, merged):
+        """Reduce a merged cmdset to a sortable, binding-aware form."""
+        return sorted(
+            (
+                cmd.key,
+                tuple(sorted(cmd.aliases)),
+                type(cmd).__name__,
+                str(getattr(cmd, "from_cmdset", "")),
+                getattr(getattr(cmd, "obj", None), "dbref", None) or "",
+            )
+            for cmd in merged.commands
+        )
+
+    def _assert_parity(self, caller, providers, scenario):
+        """Compare a legacy gather against a build pass and two cache hits."""
+        with override_settings(CMDSET_GATHER_CACHE=False):
+            legacy = self._gather(caller, providers)
+        reference = self._signature(legacy)
+        for repeat in range(3):
+            merged = self._gather(caller, providers)
+            self.assertEqual(
+                self._signature(merged),
+                reference,
+                f"{scenario}: cached gather {repeat} diverged from the legacy merge",
+            )
+            # identical gather order and duplicates handling give both paths
+            # the same mergehash, so they must share one merge-cache entry
+            self.assertIs(merged, legacy, f"{scenario}: gather {repeat} missed the merge cache")
+        self.assertIsNotNone(
+            cmdsetcache.get_cached(caller, providers),
+            f"{scenario}: gather never stored, cache hits were not exercised",
+        )
+
+    def test_parity_across_scene_changes(self):
+        self.account.puppet_object(self.session, self.char1)
+        _, providers, _, _, _ = cmdhandler.generate_cmdset_providers(
+            self.char1, session=self.session
+        )
+        # a busy scene: an inventory object, same-key cmdsets on a room object
+        # and the room itself (duplicates handling), alias-carrying commands on
+        # the caller, a call-locked bystander and a dynamic object
+        self.obj1.location = self.char1
+        self.obj1.cmdset.add(_CmdSetA())
+        self.obj2.cmdset.add(_CmdSetB())
+        self.room1.cmdset.add(_CmdSetB())
+        self.char1.cmdset.add(_CmdSetEe_Ef())
+        self.char2.cmdset.add(_CmdSetC())
+        self.char2.locks.add("call:false()")
+        self.obj2.cmdset_dynamic = True
+        self._assert_parity(self.char1, providers, "initial scene")
+        self.char2.locks.add("call:true()")
+        self._assert_parity(self.char1, providers, "bystander call lock opened")
+        self.obj1.location = self.room1
+        self._assert_parity(self.char1, providers, "inventory object dropped")
+        self.obj2.locks.add("call:attr(clearance, yes)")
+        self._assert_parity(self.char1, providers, "dynamic object attr-locked")
+        # plain Attribute writes fire no engine event; the per-input dynamic
+        # splice and the legacy walk must agree all the same
+        self.char1.attributes.add("clearance", "yes")
+        self._assert_parity(self.char1, providers, "attr flips dynamic lock without event")
+        self.char1.cmdset.add(_CmdSetNoExits())
+        self._assert_parity(self.char1, providers, "no_exits gate raised")
+        self.char1.cmdset.remove(_CmdSetNoExits)
+        self.char1.cmdset.add(_CmdSetNoObjs())
+        self._assert_parity(self.char1, providers, "no_objs gate raised")
+        self.char1.cmdset.remove(_CmdSetNoObjs)
+        self._assert_parity(self.char1, providers, "gates lowered")

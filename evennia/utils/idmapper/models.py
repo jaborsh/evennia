@@ -20,6 +20,7 @@ from django.db.transaction import atomic
 from django.db.utils import DatabaseError
 from twisted.internet.reactor import callFromThread
 
+from evennia.commands import cmdsetcache
 from evennia.utils import logger
 from evennia.utils.utils import dbref, get_evennia_pids, to_str
 
@@ -410,6 +411,9 @@ class SharedMemoryModel(Model, metaclass=SharedMemoryModelBase):
         pk = self._get_pk_val()
         if pk:
             if force or self.at_idmapper_flush():
+                # cmdset gathers cached on or around this instance would
+                # otherwise pin it and survive its re-instantiation
+                cmdsetcache.invalidate_neighborhood(self)
                 self.__class__.__dbclass__.__instance_cache__.pop(pk, None)
 
     def delete(self, *args, **kwargs):
@@ -542,6 +546,8 @@ def flush_cache(**kwargs):
 
     for cls in class_hierarchy([SharedMemoryModel]):
         cls.flush_instance_cache()
+    # no per-entity bookkeeping is possible for a bulk flush
+    cmdsetcache.invalidate_all()
     # run the python garbage collector
     return gc.collect()
 

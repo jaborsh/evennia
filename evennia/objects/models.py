@@ -21,6 +21,7 @@ from django.core.exceptions import ObjectDoesNotExist
 from django.core.validators import validate_comma_separated_integer_list
 from django.db import models
 
+from evennia.commands import cmdsetcache
 from evennia.objects.manager import ObjectDBManager
 from evennia.typeclasses.models import TypedObject
 from evennia.utils import logger
@@ -127,6 +128,10 @@ class ContentsHandler:
         self._pkcache[obj.pk] = obj
         for ctype in obj._content_types:
             self._typecache[ctype][obj.pk] = True
+        # contents changed - gathers depending on this location or the mover
+        # must rebuild
+        cmdsetcache.invalidate(self.obj)
+        cmdsetcache.invalidate(obj)
 
     def remove(self, obj):
         """
@@ -140,6 +145,10 @@ class ContentsHandler:
         for ctype in obj._content_types:
             if obj.pk in self._typecache[ctype]:
                 self._typecache[ctype].pop(obj.pk, None)
+        # contents changed - gathers depending on this location or the mover
+        # must rebuild
+        cmdsetcache.invalidate(self.obj)
+        cmdsetcache.invalidate(obj)
 
     def clear(self):
         """
@@ -396,6 +405,9 @@ class ObjectDB(TypedObject):
                     "db_location direct save triggered contents_cache.init() for all objects!"
                 )
                 [o.contents_cache.init() for o in self.__dbclass__.get_all_cached_instances()]
+                # without a known old location, no targeted invalidation is
+                # possible - drop all gather caches
+                cmdsetcache.invalidate_all()
 
     class Meta:
         """Define Django meta options"""

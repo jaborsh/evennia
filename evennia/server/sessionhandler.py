@@ -20,6 +20,7 @@ from django.conf import settings
 from django.utils.translation import gettext as _
 
 import evennia
+from evennia.commands import cmdsetcache
 from evennia.commands.cmdhandler import CMD_LOGINSTART
 from evennia.server.portal import amp
 from evennia.server.signals import (
@@ -542,6 +543,8 @@ class ServerSessionHandler(SessionHandler):
         string = string.format(account=account, address=session.address, nsessions=nsess)
         session.log(string)
         session.logged_in = True
+        # logging in changes the session's cmdset situation entirely
+        cmdsetcache.invalidate(session)
         # sync the portal to the session
         if not testmode:
             evennia.EVENNIA_SERVER_SERVICE.amp_protocol.send_AdminServer2Portal(
@@ -568,6 +571,9 @@ class ServerSessionHandler(SessionHandler):
         session = self.get(session.sessid)
         if not session:
             return
+
+        # the session's cached gathers must not survive into any reconnect
+        cmdsetcache.invalidate(session)
 
         if hasattr(session, "account") and session.account:
             # only log accounts logging off

@@ -30,7 +30,6 @@ command line. The processing of a command works as follows:
 import types
 from collections import OrderedDict, defaultdict
 from copy import copy
-from itertools import chain
 from traceback import format_exc
 
 from django.conf import settings
@@ -39,6 +38,7 @@ from twisted.internet import reactor
 from twisted.internet.defer import inlineCallbacks
 from twisted.internet.task import deferLater
 
+from evennia.commands import cmdsetcache
 from evennia.commands.cmdset import CmdSet
 from evennia.commands.command import InterruptCommand
 from evennia.utils import logger, utils
@@ -59,6 +59,20 @@ _GA = object.__getattribute__
 # transitively to the cmd.obj / cmdsetobj stored in each fingerprint).
 _CMDSET_MERGE_CACHE = OrderedDict()
 _CMDSET_MERGE_CACHE_MAXSIZE = settings.CMDSET_MERGE_CACHE_MAXSIZE
+
+
+def _gather_cache_enabled():
+    """
+    Check if the per-caller gather cache is enabled.
+
+    Returns:
+        bool: The `settings.CMDSET_GATHER_CACHE` value. Read dynamically so
+            test overrides work; defaults to `True` for settings files
+            predating the setting.
+
+    """
+    return bool(getattr(settings, "CMDSET_GATHER_CACHE", True))
+
 
 # tracks recursive calls by each caller
 # to avoid infinite loops (commands calling themselves)
@@ -337,16 +351,23 @@ def get_and_merge_cmdsets(
 
     """
     try:
+        use_gather_cache = _gather_cache_enabled()
 
         @inlineCallbacks
         def _get_local_obj_cmdsets(obj):
             """
-            Helper-method; Get Object-level cmdsets
+            Helper-method; Get Object-level cmdsets. Also records the
+            gather-cache segments in gather order: static objects' cmdsets
+            group into ("local", [cmdsets]) runs while objects with
+            `cmdset_dynamic = True` become ("dynamic", obj) segments,
+            re-evaluated per input - recorded even when their call lock
+            currently fails, since it may pass on a later input.
 
             """
             # Gather cmdsets from location, objects in location or carried
             try:
                 local_obj_cmdsets = []
+                local_segments = []
                 try:
                     location = obj.location
                 except Exception:
@@ -357,28 +378,39 @@ def get_and_merge_cmdsets(
                     local_objlist = yield (
                         location.contents_get(exclude=obj) + obj.contents_get() + [location]
                     )
-                    local_objlist = [
+                    local_objlist = [o for o in local_objlist if not o._is_deleted]
+                    # the call-type lock is checked here, it makes sure an account
+                    # is not seeing e.g. the commands on a fellow account (which is why
+                    # the no_superuser_bypass must be True)
+                    callable_objlist = [
                         o
                         for o in local_objlist
-                        if not o._is_deleted
-                        and o.access(caller, access_type="call", no_superuser_bypass=True)
+                        if o.access(caller, access_type="call", no_superuser_bypass=True)
                     ]
-                    for lobj in local_objlist:
+                    for lobj in callable_objlist:
                         try:
                             # call hook in case we need to do dynamic changing to cmdset
                             _GA(lobj, "at_cmdset_get")(caller=caller)
                         except Exception:
                             logger.log_trace()
-                    # the call-type lock is checked here, it makes sure an account
-                    # is not seeing e.g. the commands on a fellow account (which is why
-                    # the no_superuser_bypass must be True)
-                    local_obj_cmdsets = yield list(
-                        chain.from_iterable(
-                            lobj.cmdset.cmdset_stack
-                            for lobj in local_objlist
-                            if lobj.cmdset.current
+                    callable_ids = {id(lobj) for lobj in callable_objlist}
+                    static_group = []
+                    for lobj in local_objlist:
+                        lobj_cmdsets = (
+                            list(lobj.cmdset.cmdset_stack)
+                            if id(lobj) in callable_ids and lobj.cmdset.current
+                            else []
                         )
-                    )
+                        if use_gather_cache and cmdsetcache.is_dynamic(lobj):
+                            if static_group:
+                                local_segments.append(("local", static_group))
+                                static_group = []
+                            local_segments.append(("dynamic", lobj))
+                        else:
+                            static_group.extend(lobj_cmdsets)
+                        local_obj_cmdsets.extend(lobj_cmdsets)
+                    if static_group:
+                        local_segments.append(("local", static_group))
                     for cset in local_obj_cmdsets:
                         # This is necessary for object sets, or we won't be able to
                         # separate the command sets from each other in a busy room. We
@@ -386,7 +418,34 @@ def get_and_merge_cmdsets(
                         # explicitly.
                         cset.old_duplicates = cset.duplicates
                         cset.duplicates = True if cset.duplicates is None else cset.duplicates
-                return local_obj_cmdsets
+                return local_obj_cmdsets, local_segments
+            except Exception:
+                _msg_err(caller, _ERROR_CMDSETS)
+                raise ErrorReported(raw_string)
+
+        @inlineCallbacks
+        def _get_dynamic_obj_cmdsets(obj, no_exits):
+            """
+            Helper method; Re-evaluate a `cmdset_dynamic` local object's
+            contribution on the cached path: call lock, `at_cmdset_get` hook
+            and current stack, with the cached gather's no_exits gate applied.
+
+            """
+            try:
+                if obj._is_deleted or not obj.access(
+                    caller, access_type="call", no_superuser_bypass=True
+                ):
+                    return []
+                try:
+                    _GA(obj, "at_cmdset_get")(caller=caller)
+                except Exception:
+                    logger.log_trace()
+                if not obj.cmdset.current:
+                    return []
+                dyn_cmdsets = yield list(obj.cmdset.cmdset_stack)
+                if no_exits:
+                    dyn_cmdsets = [cmdset for cmdset in dyn_cmdsets if cmdset.key != "ExitCmdSet"]
+                return dyn_cmdsets
             except Exception:
                 _msg_err(caller, _ERROR_CMDSETS)
                 raise ErrorReported(raw_string)
@@ -408,40 +467,27 @@ def get_and_merge_cmdsets(
             except AttributeError:
                 return (CmdSet(), [])
 
-        local_obj_cmdsets = []
+        @inlineCallbacks
+        def _weed_and_merge(object_cmdsets):
+            """
+            Helper method; Weed out empty cmdsets, report import errors and
+            merge the remainder via the fingerprint-keyed merge cache.
 
-        current_cmdset = CmdSet()
-        object_cmdsets = list()
-        for cmdobj in cmdset_providers:
-            current, cur_cmdsets = yield _get_cmdsets(cmdobj, current_cmdset)
-            if current:
-                current_cmdset = current_cmdset + current
-            if cur_cmdsets:
-                object_cmdsets += cur_cmdsets
-            match cmdobj.cmdset_provider_type:
-                case "object":
-                    if not current.no_objs:
-                        local_obj_cmdsets = yield _get_local_obj_cmdsets(cmdobj)
-                        if current.no_exits:
-                            # filter out all exits
-                            local_obj_cmdsets = [
-                                cmdset for cmdset in local_obj_cmdsets if cmdset.key != "ExitCmdSet"
-                            ]
-                        object_cmdsets += local_obj_cmdsets
-
-        # weed out all non-found sets
-        cmdsets = yield [
-            cmdset for cmdset in object_cmdsets if cmdset and cmdset.key != "_EMPTY_CMDSET"
-        ]
-        # report cmdset errors to user (these should already have been logged)
-        if report_to:
-            yield [
-                report_to.msg(err_helper(cmdset.errmessage, cmdid=cmdid))
-                for cmdset in cmdsets
-                if cmdset.key == "_CMDSET_ERROR"
+            """
+            # weed out all non-found sets
+            cmdsets = yield [
+                cmdset for cmdset in object_cmdsets if cmdset and cmdset.key != "_EMPTY_CMDSET"
             ]
+            # report cmdset errors to user (these should already have been logged)
+            if report_to:
+                yield [
+                    report_to.msg(err_helper(cmdset.errmessage, cmdid=cmdid))
+                    for cmdset in cmdsets
+                    if cmdset.key == "_CMDSET_ERROR"
+                ]
 
-        if cmdsets:
+            if not cmdsets:
+                return None
             # each cmdset caches its own fingerprint, so this is just a tuple lookup
             mergehash = tuple(cmdset.fingerprint for cmdset in cmdsets)
             if mergehash in _CMDSET_MERGE_CACHE:
@@ -477,8 +523,113 @@ def get_and_merge_cmdsets(
                 _CMDSET_MERGE_CACHE[mergehash] = cmdset
                 if len(_CMDSET_MERGE_CACHE) > _CMDSET_MERGE_CACHE_MAXSIZE:
                     _CMDSET_MERGE_CACHE.popitem(last=False)
-        else:
-            cmdset = None
+            return cmdset
+
+        @inlineCallbacks
+        def _expand_cached(cached):
+            """
+            Helper method; Rebuild the flat cmdset list from a cached gather
+            and merge it, re-applying the duplicates handling that the
+            original gather performed on the live, shared cmdsets and
+            re-evaluating any ("dynamic", obj) segments per input.
+
+            """
+            object_cmdsets = []
+            to_restore = []
+
+            def _add_local(csets):
+                for cset in csets:
+                    to_restore.append((cset, cset.duplicates))
+                    cset.old_duplicates = cset.duplicates
+                    cset.duplicates = True if cset.duplicates is None else cset.duplicates
+                    object_cmdsets.append(cset)
+
+            try:
+                for kind, payload in cached.segments:
+                    if kind == "provider":
+                        object_cmdsets.extend(payload)
+                    elif kind == "local":
+                        _add_local(payload)
+                    else:
+                        # ("dynamic", obj)
+                        dyn_cmdsets = yield _get_dynamic_obj_cmdsets(payload, cached.no_exits)
+                        _add_local(dyn_cmdsets)
+                cmdset = yield _weed_and_merge(object_cmdsets)
+            finally:
+                for cset, old_duplicates in to_restore:
+                    cset.duplicates = old_duplicates
+            return cmdset
+
+        # fast path: reuse the cached gather if no engine event invalidated it
+        segments = []
+        cacheable = use_gather_cache
+        obj_provider = build_location = start_vector = start_epoch = None
+        if use_gather_cache:
+            cached = cmdsetcache.get_cached(caller, cmdset_providers)
+            if cached is not None:
+                cmdset = yield _expand_cached(cached)
+                return cmdset
+            obj_provider = next(
+                (
+                    provider
+                    for provider in cmdset_providers
+                    if provider.cmdset_provider_type == "object"
+                ),
+                None,
+            )
+            try:
+                build_location = obj_provider.location if obj_provider else None
+            except Exception:
+                build_location = None
+            start_epoch = cmdsetcache.get_epoch()
+            start_vector = cmdsetcache.snapshot_vector(cmdset_providers, build_location)
+            cacheable = not any(cmdsetcache.is_dynamic(provider) for provider in cmdset_providers)
+
+        local_obj_cmdsets = []
+        gate_no_objs = gate_no_exits = None
+
+        current_cmdset = CmdSet()
+        object_cmdsets = list()
+        for cmdobj in cmdset_providers:
+            current, cur_cmdsets = yield _get_cmdsets(cmdobj, current_cmdset)
+            if current:
+                current_cmdset = current_cmdset + current
+            if cur_cmdsets:
+                object_cmdsets += cur_cmdsets
+            if use_gather_cache:
+                segments.append(("provider", tuple(cur_cmdsets or ())))
+            match cmdobj.cmdset_provider_type:
+                case "object":
+                    gate_no_objs = current.no_objs
+                    gate_no_exits = current.no_exits
+                    if not current.no_objs:
+                        local_obj_cmdsets, local_segments = yield _get_local_obj_cmdsets(cmdobj)
+                        if current.no_exits:
+                            # filter out all exits
+                            local_obj_cmdsets = [
+                                cmdset for cmdset in local_obj_cmdsets if cmdset.key != "ExitCmdSet"
+                            ]
+                        object_cmdsets += local_obj_cmdsets
+                        if use_gather_cache:
+                            for kind, payload in local_segments:
+                                if kind == "dynamic":
+                                    segments.append((kind, payload))
+                                elif current.no_exits:
+                                    segments.append(
+                                        (
+                                            kind,
+                                            tuple(
+                                                cmdset
+                                                for cmdset in payload
+                                                if cmdset.key != "ExitCmdSet"
+                                            ),
+                                        )
+                                    )
+                                else:
+                                    segments.append((kind, tuple(payload)))
+
+        cmdset = yield _weed_and_merge(object_cmdsets)
+
         for cset in (cset for cset in local_obj_cmdsets if cset):
             cset.duplicates = cset.old_duplicates
         # important - this syncs the CmdSetHandler's .current field with the
@@ -487,6 +638,35 @@ def get_and_merge_cmdsets(
         # - see https://github.com/evennia/evennia/issues/2855
         # if cmdset:
         #     caller.cmdset.current = cmdset
+
+        if use_gather_cache and cacheable:
+            # only store if nothing was invalidated while we gathered (e.g. an
+            # at_cmdset_get hook adding a cmdset mid-walk); if something was,
+            # the next input simply rebuilds, so a stale gather is never stored
+            try:
+                end_location = obj_provider.location if obj_provider else None
+            except Exception:
+                end_location = ()  # forces mismatch below
+            if (
+                cmdsetcache.get_epoch() == start_epoch
+                and end_location is build_location
+                and cmdsetcache.vectors_equal(
+                    start_vector, cmdsetcache.snapshot_vector(cmdset_providers, build_location)
+                )
+            ):
+                cmdsetcache.store_cached(
+                    caller,
+                    cmdset_providers,
+                    cmdsetcache.CachedGather(
+                        start_epoch,
+                        tuple(cmdset_providers),
+                        build_location,
+                        start_vector,
+                        tuple(segments),
+                        no_objs=gate_no_objs,
+                        no_exits=gate_no_exits,
+                    ),
+                )
 
         return cmdset
     except ErrorReported:

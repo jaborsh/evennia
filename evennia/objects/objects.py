@@ -394,6 +394,12 @@ class DefaultObject(ObjectDB, metaclass=TypeclassBase):
     cmdset_provider_order = 100
     cmdset_provider_error_order = 100
     cmdset_provider_type = "object"
+    # If True, this entity's cmdset contribution (its `call` lock, its
+    # `at_cmdset_get` hook and its cmdset stack) is re-evaluated on every
+    # command input instead of being cached between engine events. Only
+    # relevant with `settings.CMDSET_GATHER_CACHE` enabled; see
+    # `evennia.commands.cmdsetcache`.
+    cmdset_dynamic = False
 
     # Used for sorting / filtering in inventories / room contents.
     _content_types = ("object",)

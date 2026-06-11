@@ -110,6 +110,7 @@ from django.conf import settings
 from django.utils.translation import gettext as _
 
 import evennia
+from evennia.commands import cmdsetcache
 from evennia.utils import logger, utils
 
 __all__ = ("LockHandler", "LockException")
@@ -309,6 +310,9 @@ class LockHandler:
             object.__setattr__(self.obj, "db_lock_storage", lock_string)
         else:
             self.obj.lock_storage = lock_string
+        # all lock edits (add/remove/clear/append) funnel through here; a
+        # changed 'call' lock affects the cmdset gathers of everyone nearby
+        cmdsetcache.invalidate_neighborhood(self.obj)
 
     def cache_lock_bypass(self, obj):
         """
@@ -325,6 +329,8 @@ class LockHandler:
 
         """
         self.lock_bypass = hasattr(obj, "is_superuser") and obj.is_superuser
+        # a changed bypass status changes lock outcomes without any lock edit
+        cmdsetcache.invalidate(self.obj)
 
     def add(self, lockstring, validate_only=False):
         """
@@ -502,6 +508,8 @@ class LockHandler:
         """
         self._cache_locks(self.obj.lock_storage)
         self.cache_lock_bypass(self.obj)
+        # re-caching changes lock outcomes (e.g. quelling) without a lock edit
+        cmdsetcache.invalidate_neighborhood(self.obj)
 
     def append(self, access_type, lockstring, op="or"):
         """

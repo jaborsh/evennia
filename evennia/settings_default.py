@@ -548,6 +548,15 @@ CMDSET_PATHS = ["commands", "evennia", "evennia.contrib"]
 # entry is evicted. Increase if your game has many unique rooms/objects; decrease
 # to save memory.
 CMDSET_MERGE_CACHE_MAXSIZE = 1000
+# If True, the cmdsets gathered from a caller's session/account/puppet chain and
+# surrounding objects are cached per caller and only re-gathered when an engine
+# event (movement, cmdset/lock/permission changes, puppeting etc) invalidates
+# them. This also means the `call` lock and the `at_cmdset_get` hook of nearby
+# objects are evaluated when the cache is (re)built rather than on every command
+# input; set `cmdset_dynamic = True` on a typeclass to retain per-input
+# evaluation for its instances. If False, cmdsets are re-gathered from scratch
+# on every command input. See `evennia.commands.cmdsetcache` for details.
+CMDSET_GATHER_CACHE = True
 # Fallbacks for cmdset paths that fail to load. Note that if you change the path for your
 # default cmdsets, you will also need to copy CMDSET_FALLBACKS after your change in your
 # settings file for it to detect the change.

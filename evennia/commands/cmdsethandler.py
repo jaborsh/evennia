@@ -73,6 +73,7 @@ from traceback import format_exc
 from django.conf import settings
 from django.utils.translation import gettext as _
 
+from evennia.commands import cmdsetcache
 from evennia.commands.cmdset import CmdSet
 from evennia.server.models import ServerConfig
 from evennia.utils import logger, utils
@@ -413,6 +414,25 @@ class CmdSetHandler(object):
                 continue
             self.mergetype_stack.append(new_current.actual_mergetype)
         self.current = new_current
+        # every stack mutation (add/remove/clear/reset/init) funnels through
+        # here, so this single bump keeps all gather caches honest
+        cmdsetcache.invalidate_neighborhood(self.obj)
+
+    def invalidate_caches(self):
+        """
+        Manually invalidate cached cmdset gathers depending on this object.
+
+        Notes:
+            The gather cache (`settings.CMDSET_GATHER_CACHE`) is invalidated
+            automatically by engine events (cmdset changes, movement, lock and
+            permission changes, puppeting etc). Call this when changing
+            command availability through state the engine cannot see, such as
+            a plain Attribute used in this object's 'call' lock - or set
+            `cmdset_dynamic = True` on the typeclass to re-evaluate its
+            contribution on every input.
+
+        """
+        cmdsetcache.invalidate_neighborhood(self.obj)
 
     def add(self, cmdset, emit_to_obj=None, persistent=False, default_cmdset=False, **kwargs):
         """

@@ -15,6 +15,7 @@ from collections import defaultdict
 from django.conf import settings
 from django.db import models
 
+from evennia.commands import cmdsetcache
 from evennia.locks.lockfuncs import perm as perm_lockfunc
 from evennia.utils.utils import make_iter, to_str
 
@@ -837,6 +838,31 @@ class PermissionHandler(TagHandler):
     """
 
     _tagtype = "permission"
+
+    # permission changes affect perm()-style lock results (e.g. 'call' locks
+    # checked during cmdset gathering) without any lock edit, so every
+    # mutation must invalidate the gather caches around the holder.
+    # `batch_remove` needs no override since it routes through `remove`.
+
+    def add(self, *args, **kwargs):
+        """Add permission(s); see `TagHandler.add`."""
+        super().add(*args, **kwargs)
+        cmdsetcache.invalidate_neighborhood(self.obj)
+
+    def remove(self, *args, **kwargs):
+        """Remove permission(s); see `TagHandler.remove`."""
+        super().remove(*args, **kwargs)
+        cmdsetcache.invalidate_neighborhood(self.obj)
+
+    def clear(self, *args, **kwargs):
+        """Remove all permissions; see `TagHandler.clear`."""
+        super().clear(*args, **kwargs)
+        cmdsetcache.invalidate_neighborhood(self.obj)
+
+    def batch_add(self, *args):
+        """Batch-add permissions; see `TagHandler.batch_add`."""
+        super().batch_add(*args)
+        cmdsetcache.invalidate_neighborhood(self.obj)
 
     def check(self, *permissions, require_all=False):
         """

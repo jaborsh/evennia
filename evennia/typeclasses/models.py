@@ -39,6 +39,7 @@ from django.utils.text import slugify
 from django.utils.translation import gettext as _
 
 import evennia
+from evennia.commands import cmdsetcache
 from evennia.locks.lockhandler import LockHandler
 from evennia.server.signals import SIGNAL_TYPED_OBJECT_POST_RENAME
 from evennia.typeclasses import managers
@@ -573,6 +574,8 @@ class TypedObject(SharedMemoryModel):
         self.save(update_fields=["db_key"])
         self.at_rename(oldname, value)
         SIGNAL_TYPED_OBJECT_POST_RENAME.send(sender=self, old_key=oldname, new_key=value)
+        # renames can change cmdset contributions (e.g. exit commands)
+        cmdsetcache.invalidate_neighborhood(self)
 
     @property
     def date_created(self):
@@ -817,6 +820,9 @@ class TypedObject(SharedMemoryModel):
             # a custom hook-name to call.
             for start_hook in str(run_start_hooks).split():
                 getattr(self, run_start_hooks)()
+
+        # the new class can change cmdset hooks/flags with no other event
+        cmdsetcache.invalidate_neighborhood(self)
 
     #
     # Lock / permission methods

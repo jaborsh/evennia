@@ -52,6 +52,11 @@ class ServerSession(_BASE_SESSION_CLASS):
     cmdset_provider_order = 0
     cmdset_provider_error_order = 50
     cmdset_provider_type = "session"
+    # If True, this entity's cmdset contribution is re-evaluated on every
+    # command input instead of being cached between engine events. Only
+    # relevant with `settings.CMDSET_GATHER_CACHE` enabled; see
+    # `evennia.commands.cmdsetcache`.
+    cmdset_dynamic = False
 
     def __init__(self):
         """

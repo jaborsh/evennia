@@ -26,6 +26,7 @@ from django.utils.translation import gettext as _
 import evennia
 from evennia.accounts.manager import AccountManager
 from evennia.accounts.models import AccountDB
+from evennia.commands import cmdsetcache
 from evennia.commands.cmdsethandler import CmdSetHandler
 from evennia.comms.models import ChannelDB
 from evennia.objects.models import ObjectDB
@@ -317,6 +318,11 @@ class DefaultAccount(AccountDB, metaclass=TypeclassBase):
     cmdset_provider_order = 50
     cmdset_provider_error_order = 0
     cmdset_provider_type = "account"
+    # If True, this entity's cmdset contribution is re-evaluated on every
+    # command input instead of being cached between engine events. Only
+    # relevant with `settings.CMDSET_GATHER_CACHE` enabled; see
+    # `evennia.commands.cmdsetcache`.
+    cmdset_dynamic = False
 
     objects = AccountManager()
 
@@ -553,6 +559,9 @@ class DefaultAccount(AccountDB, metaclass=TypeclassBase):
 
         # re-cache locks to make sure superuser bypass is updated
         obj.locks.cache_lock_bypass(obj)
+        # puppeting changes whose permissions apply to cmdset gathers
+        cmdsetcache.invalidate(obj)
+        cmdsetcache.invalidate(self)
         # final hook
         obj.at_post_puppet()
         SIGNAL_OBJECT_POST_PUPPET.send(sender=obj, account=self, session=session)
@@ -579,6 +588,9 @@ class DefaultAccount(AccountDB, metaclass=TypeclassBase):
                     del obj.account
                 obj.at_post_unpuppet(self, session=session)
                 obj.tags.remove("puppeted", category="account")
+                # unpuppeting changes whose permissions apply to cmdset gathers
+                cmdsetcache.invalidate(obj)
+                cmdsetcache.invalidate(self)
                 SIGNAL_OBJECT_POST_UNPUPPET.send(sender=obj, session=session, account=self)
             # Just to be sure we're always clear.
             session.puppet = None
