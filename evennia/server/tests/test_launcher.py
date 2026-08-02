@@ -65,30 +65,32 @@ class TestLauncher(TwistedTestCase):
         result = evennia_launcher._parse_status(response)
         self.assertEqual(result, ("teststring",))
 
+    @staticmethod
+    def _opt(cmd, prefix):
+        """Return the first cmdline argument starting with prefix, or None."""
+        return next((arg for arg in cmd if arg.startswith(prefix)), None)
+
     @patch("evennia.server.evennia_launcher.os.name", new="posix")
     def test_get_twisted_cmdline(self):
         pcmd, scmd = evennia_launcher._get_twistd_cmdline(False, False)
-        self.assertIn("portal.py", pcmd[1])
-        self.assertIn("--pidfile", pcmd[3])
-        self.assertIn("server.py", scmd[1])
-        self.assertIn("--pidfile", scmd[3])
+        for cmd, pyfile in ((pcmd, "portal.py"), (scmd, "server.py")):
+            self.assertIn("--reactor=asyncio", cmd)
+            self.assertTrue(self._opt(cmd, "--python=").endswith(pyfile), cmd)
+            self.assertIsNotNone(self._opt(cmd, "--pidfile="), cmd)
+            self.assertIsNone(self._opt(cmd, "--profiler="), cmd)
 
         pcmd, scmd = evennia_launcher._get_twistd_cmdline(True, True)
-        self.assertIn("portal.py", pcmd[1])
-        self.assertIn("--pidfile", pcmd[3])
-        self.assertIn("--profiler=cprofile", pcmd[5], pcmd)
-        self.assertIn("--profile=", pcmd[6])
-        self.assertIn("server.py", scmd[1])
-        self.assertIn("--pidfile", scmd[3])
-        self.assertIn("--pidfile", scmd[3])
-        self.assertIn("--profiler=cprofile", scmd[5], "actual: {}".format(scmd))
-        self.assertIn("--profile=", scmd[6])
+        for cmd in (pcmd, scmd):
+            self.assertIn("--savestats", cmd)
+            self.assertEqual(self._opt(cmd, "--profiler="), "--profiler=cprofile", cmd)
+            self.assertIsNotNone(self._opt(cmd, "--profile="), cmd)
 
     @patch("evennia.server.evennia_launcher.os.name", new="nt")
     def test_get_twisted_cmdline_nt(self):
+        # PID files are UNIX-only
         pcmd, scmd = evennia_launcher._get_twistd_cmdline(False, False)
-        self.assertTrue(len(pcmd) == 3, pcmd)
-        self.assertTrue(len(scmd) == 3, scmd)
+        for cmd in (pcmd, scmd):
+            self.assertIsNone(self._opt(cmd, "--pidfile="), cmd)
 
     @patch("evennia.server.evennia_launcher.reactor.stop")
     def test_reactor_stop(self, mockstop):
