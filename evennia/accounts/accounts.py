@@ -58,6 +58,7 @@ _MULTISESSION_MODE = settings.MULTISESSION_MODE
 _AUTO_CREATE_CHARACTER_WITH_ACCOUNT = settings.AUTO_CREATE_CHARACTER_WITH_ACCOUNT
 _AUTO_PUPPET_ON_LOGIN = settings.AUTO_PUPPET_ON_LOGIN
 _MAX_NR_SIMULTANEOUS_PUPPETS = settings.MAX_NR_SIMULTANEOUS_PUPPETS
+_PERMISSION_MULTIPLE_PUPPETS = settings.PERMISSION_MULTIPLE_PUPPETS
 _MAX_NR_CHARACTERS = settings.MAX_NR_CHARACTERS
 _CMDSET_ACCOUNT = settings.CMDSET_ACCOUNT
 _MUDINFO_CHANNEL = None
@@ -535,7 +536,7 @@ class DefaultAccount(AccountDB, metaclass=TypeclassBase):
             already_puppeted = self.get_all_puppets()
             if (
                 not self.is_superuser
-                and not self.check_permstring("Developer")
+                and not self.check_permstring(_PERMISSION_MULTIPLE_PUPPETS)
                 and obj not in already_puppeted
                 and len(self.get_all_puppets()) >= _MAX_NR_SIMULTANEOUS_PUPPETS
             ):
@@ -1769,7 +1770,7 @@ class DefaultAccount(AccountDB, metaclass=TypeclassBase):
         """
         pass
 
-    def at_msg_receive(self, text=None, from_obj=None, **kwargs):
+    def at_msg_receive(self, text=None, from_obj=None, **kwargs) -> bool:
         """
         This hook is called whenever someone sends a message to this
         object using the `msg` method.

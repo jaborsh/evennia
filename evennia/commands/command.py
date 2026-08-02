@@ -165,6 +165,9 @@ class Command(metaclass=CommandMeta):
                this is usually the same as caller.
     self.raw_string - the full raw string input, including the command name,
                       any args and no parsing.
+    self.client_live_report_typing - whether the client should report on the typing
+                                     status of a user while using a command.
+                                     Defaults to False.
 
     The following class properties can/should be defined on your child class:
 
@@ -205,6 +208,9 @@ class Command(metaclass=CommandMeta):
     is_exit = False
     # define the command not only by key but by the regex form of its arguments
     arg_regex = settings.COMMAND_DEFAULT_ARG_REGEX
+    # whether this command and its aliases should report on the typing status of the
+    # user.
+    client_live_report_typing = False
     # whether self.msg sends to all sessions of a related account/object (default
     # is to only send to the session sending the command).
     msg_all_sessions = settings.COMMAND_DEFAULT_MSG_ALL_SESSIONS
@@ -448,6 +454,7 @@ Command \"{cmdname}\" has no defined `func()` method. Available properties on th
                 ("self.locks", self.locks),
                 ("self.help_category", self.help_category),
                 ("self.cmdset", self.cmdset),
+                ("self.client_live_report_typing", self.client_live_report_typing),
             )
         ]
         output = output_string.format(cmdname=self.key, variables="\n    ".join(variables))

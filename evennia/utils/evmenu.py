@@ -1139,7 +1139,12 @@ class EvMenu:
         self.msg(self.nodetext)
 
     def display_helptext(self):
-        self.msg(self.helptext)
+        helptext = self.helptext
+        if isinstance(helptext, dict):
+            # a dict holds per-command tooltips; render it as a readable listing
+            # rather than sending the raw mapping to the caller.
+            helptext = "\n".join(f"|w{key}|n: {entry}" for key, entry in helptext.items())
+        self.msg(helptext)
 
     def display_tooltip(self, cmd):
         self.msg(self.helptext.get(cmd))
@@ -1164,12 +1169,17 @@ class EvMenu:
         Format the node's help text
 
         Args:
-            helptext (str): The unformatted help text for the node.
+            helptext (str or dict): The unformatted help text for the node. A dict
+                maps a tooltip command to its own help text; each entry is
+                formatted separately.
 
         Returns:
-            helptext (str): The formatted help text.
+            helptext (str or dict): The formatted help text, of the same type as
+                the input.
 
         """
+        if isinstance(helptext, dict):
+            return {key: self.helptext_formatter(entry) for key, entry in helptext.items()}
         return dedent(helptext.strip("\n"), baseline_index=0).rstrip()
 
     def options_formatter(self, optionlist):

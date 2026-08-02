@@ -2015,7 +2015,7 @@ class DefaultObject(ObjectDB, metaclass=TypeclassBase):
         """
         pass
 
-    def at_object_delete(self):
+    def at_object_delete(self) -> bool:
         """
         Called just before the database object is persistently
         delete()d from the database. If this method returns False,
@@ -2177,7 +2177,7 @@ class DefaultObject(ObjectDB, metaclass=TypeclassBase):
 
     # hooks called when moving the object
 
-    def at_pre_move(self, destination, move_type="move", **kwargs):
+    def at_pre_move(self, destination, move_type="move", **kwargs) -> bool:
         """
         Called just before starting to move this object to
         destination. Return False to abort move.
@@ -2201,7 +2201,7 @@ class DefaultObject(ObjectDB, metaclass=TypeclassBase):
         """
         return True
 
-    def at_pre_object_leave(self, leaving_object, destination, **kwargs):
+    def at_pre_object_leave(self, leaving_object, destination, **kwargs) -> bool:
         """
         Called just before this object is about lose an object that was
         previously 'inside' it. Return False to abort move.
@@ -2222,7 +2222,7 @@ class DefaultObject(ObjectDB, metaclass=TypeclassBase):
         """
         return True
 
-    def at_pre_object_receive(self, arriving_object, source_location, **kwargs):
+    def at_pre_object_receive(self, arriving_object, source_location, **kwargs) -> bool:
         """
         Called just before this object received another object. If this
         method returns `False`, the move is aborted and the moved entity
@@ -2491,7 +2491,7 @@ class DefaultObject(ObjectDB, metaclass=TypeclassBase):
         """
         pass
 
-    def at_msg_receive(self, text=None, from_obj=None, **kwargs):
+    def at_msg_receive(self, text=None, from_obj=None, **kwargs) -> bool:
         """
         This hook is called whenever someone sends a message to this
         object using the `msg` method.
@@ -2660,7 +2660,7 @@ class DefaultObject(ObjectDB, metaclass=TypeclassBase):
         """
         pass
 
-    def at_pre_get(self, getter, **kwargs):
+    def at_pre_get(self, getter, **kwargs) -> bool:
         """
         Called by the default `get` command before this object has been
         picked up.
@@ -2699,7 +2699,7 @@ class DefaultObject(ObjectDB, metaclass=TypeclassBase):
         """
         pass
 
-    def at_pre_give(self, giver, getter, **kwargs):
+    def at_pre_give(self, giver, getter, **kwargs) -> bool:
         """
         Called by the default `give` command before this object has been
         given.

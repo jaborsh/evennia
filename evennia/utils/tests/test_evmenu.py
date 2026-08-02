@@ -373,3 +373,37 @@ class TestEvMenuPersistentReloadRegression(BaseEvenniaTest):
         menu_cmdsets = [cmdset for cmdset in self.char1.cmdset.get() if cmdset.key == "menu_cmdset"]
         self.assertEqual(len(menu_cmdsets), 1)
         self.assertEqual(self.char1.cmdset_storage.count("evennia.utils.evmenu.EvMenuCmdSet"), 1)
+
+
+def _tooltip_menu_start(caller, raw_string, **kwargs):
+    return (
+        "start text",
+        {"foo": "help about foo", ("bar", "baz"): "help about bar"},
+    ), {"key": "next", "desc": "go next", "goto": "start"}
+
+
+class TestEvMenuDictHelptext(BaseEvenniaTest):
+    """
+    A node may return its help text as a dict in order to provide per-command
+    tooltips (issue #3755).
+    """
+
+    def test_dict_helptext_node(self):
+        menu = evmenu.EvMenu(self.char1, {"start": _tooltip_menu_start}, session=self.session)
+        self.assertEqual(
+            menu.helptext,
+            {"foo": "help about foo", "bar": "help about bar", "baz": "help about bar"},
+        )
+
+    def test_help_fallback_renders_dict(self):
+        """Typing 'help' on a dict-helptext node shows a readable listing, not a raw dict."""
+        self.char1.msg = MagicMock()
+        menu = evmenu.EvMenu(self.char1, {"start": _tooltip_menu_start}, session=self.session)
+        self.char1.msg.reset_mock()
+
+        menu.parse_input("help")
+
+        sent = self.char1.msg.call_args.kwargs["text"][0]
+        self.assertIsInstance(sent, str)
+        self.assertIn("help about foo", sent)
+        self.assertIn("help about bar", sent)

@@ -1,6 +1,21 @@
 # Changelog
 
-## Main branch
+## Evennia Main branch
+
+- [Feat][pull3963]: Allow customizing permission required to bypass max puppet limit (owllex)
+- [Fix][pull3922]: Fix MXP OPEN mode eating unknown tags like <username> in plain text (blongden)
+- [Fix][pull3962]: Prevent aborting channel message distribution when at_pre_channel_msg returns False/None (owllex)
+- [Fix][pull3968]: EvMenu: format dict helptext per entry (Sanjays2402)
+- Fix: EvMenu: render dict helptext as a readable list on 'help' instead of a raw dict (Griatch)
+
+[pull3922]: https://github.com/evennia/evennia/pull/3922
+[pull3962]: https://github.com/evennia/evennia/pull/3962
+[pull3963]: https://github.com/evennia/evennia/pull/3963
+[pull3968]: https://github.com/evennia/evennia/pull/3968
+
+## Evennia 6.1.0
+
+July 5, 2026
 
 - Feat: Add AGENTS.md and .agents context files to aid AI agent development (Griatch)
 - Feat: Add `uv.lock` for Evennia library developers wanting to use the `uv` tool (Griatch)
@@ -10,6 +25,11 @@
   Existing clients are unaffected. (daiimus)
 - [Feat][pull3511]: Add `article` and `format` kwargs to `$You()`/`$you()`/`$Your()`/`$your()`.
   `$You()` now auto-capitalizes names for third-person receivers. (chiizujin)
+- [Feat][pull3939]: Make AttributeProperty and NAttributeProperty generic for type inference (Problematic)
+- [Feat][pull3940]: Add @overload signatures to TagHandler.get() for type narrowing (Problematic)
+- [Feat][pull3917]: Add configurable server lifecycle broadcast messages (blongden)
+- [Feat][pull3644]: Add database_backup contrib for scheduled database backups (aMiss-aWry)
+- [Feat][pull3510]: Webclient is-typing indicator when others are typing emotes in same location (michaelfaith84)
 - [Fix][pull3866]: Fix 'None' showing up in Evennia startup log (jaborsh)
 - [Fix][pull3869]: Handle `evennia -l &` for non-Windows systems (jaborsh)
 - Fix: Improve indentation/formatting for east-asian languages (Griatch, with inspiration from hhsiao)
@@ -17,7 +37,7 @@
 - [Fix][pull3877]: Fixes multimatch numbering display to be case insensitive (InspectorCaracal)
 - [Fix][pull3883]: Taskhandler: Fix TaskHandlerTask stale references & clean up (jaborsh)
 - [Feat][pull3884]: Formally support PostgreSQL with psycopg3 (jaborsh)
-- [Fix][pull3885]: Is_ooc(): Thread session through lock system in multi-session mode (jaborsh)
+- [Fix][pull3885]: `is_ooc()`: Thread session through lock system in multi-session mode (jaborsh)
 - Fix: Add deprecation warning for custom cmdparsers missing `session` kwarg (Griatch)
 - [Fix][pull3888]: Close stale DB connections before first query (jaborsh)
 - [Fix][pull3898]: Pass caller to purge_processor in CmdStateCC cc command (saschabuehrle)
@@ -39,7 +59,11 @@
 - [Fix][pull3911]: Fix cmdset merge cache, improving performance up to 500x (kvmet)
 - [Fix][pull3913]: Fix tag/search failing when searching by category only (blongden)
 - [Fix][pull3914]: Fix NAWS stale-width on terminal resize and 'autoresize' client-option validation (michaelfaith84)
-- Docs: Griatch, BigJMoney
+- [Fix][pull3936]: Add -> bool return annotations to override-intended hook methods (Problematic)
+- [Fix][pull3938]: Fix ReferenceError in notifications plugin when window unfocused (Problematic)
+- [Fix][pull3942]: Add `AMP_CONNECT_TIMEOUT` for portal probe (jaborsh)
+- Fix: Resolve UnhandledCommand race on server start (Griatch)
+- Docs: Griatch, BigJMoney, dicnunz, pikammmmm, InspectorCaracal
 
 [pull3866]: https://github.com/evennia/evennia/pull/3866
 [pull3867]: https://github.com/evennia/evennia/pull/3867
@@ -60,11 +84,19 @@
 [pull3911]: https://github.com/evennia/evennia/pull/3911
 [pull3913]: https://github.com/evennia/evennia/pull/3913
 [pull3914]: https://github.com/evennia/evennia/pull/3914
+[pull3936]: https://github.com/evennia/evennia/pull/3936
+[pull3938]: https://github.com/evennia/evennia/pull/3938
+[pull3939]: https://github.com/evennia/evennia/pull/3939
+[pull3940]: https://github.com/evennia/evennia/pull/3940
+[pull3917]: https://github.com/evennia/evennia/pull/3917
+[pull3644]: https://github.com/evennia/evennia/pull/3644
+[pull3942]: https://github.com/evennia/evennia/pull/3942
 [pull3504]: https://github.com/evennia/evennia/pull/3504
 [pull3511]: https://github.com/evennia/evennia/pull/3511
 [pull3600]: https://github.com/evennia/evennia/pull/3600
 [pull3769]: https://github.com/evennia/evennia/pull/3769
 [pull3850]: https://github.com/evennia/evennia/pull/3850
+[pull3510]: https://github.com/evennia/evennia/pull/3510
 [issue3890]: https://github.com/evennia/evennia/issues/3890
 [issue3895]: https://github.com/evennia/evennia/issues/3895
 [mudstandards-ws]: https://mudstandards.org/websocket/

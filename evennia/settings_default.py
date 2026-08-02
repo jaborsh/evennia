@@ -318,6 +318,10 @@ AUDIT_MASKS = [
 ]
 # Broadcast "Server restart"-like messages to all sessions.
 BROADCAST_SERVER_RESTART_MESSAGES = True
+# Messages broadcast to all sessions on server lifecycle events.
+SERVER_RELOAD_INITIATE_MSG = " Server restart initiated {reason}..."
+SERVER_RESET_MSG = " Server resetting/restarting ..."
+SERVER_RESTART_MSG = " ... Server restarted."
 
 ######################################################################
 # Evennia Database config
@@ -501,7 +505,11 @@ LOCK_FUNC_MODULES = ("evennia.locks.lockfuncs", "server.conf.lockfuncs")
 # Module holding handlers for managing incoming data from the client. These
 # will be loaded in order, meaning functions in later modules may overload
 # previous ones if having the same name.
-INPUT_FUNC_MODULES = ["evennia.server.inputfuncs", "server.conf.inputfuncs"]
+INPUT_FUNC_MODULES = [
+    "evennia.server.inputfuncs",
+    "server.conf.inputfuncs",
+    "evennia.server.is_typing",
+]
 # Modules that contain prototypes for use with the spawner mechanism.
 PROTOTYPE_MODULES = ["world.prototypes"]
 # Modules containining Prototype functions able to be embedded in prototype
@@ -827,6 +835,8 @@ AUTO_PUPPET_ON_LOGIN = True
 # How many *different* characters an account can puppet *at the same time*. A value
 # above 1 only makes a difference together with MULTISESSION_MODE > 1.
 MAX_NR_SIMULTANEOUS_PUPPETS = 1
+# The permission required to bypass MAX_NR_SIMULTANEOUS_PUPPETS.
+PERMISSION_MULTIPLE_PUPPETS = "Developer"
 # The maximum number of characters allowed by be created by the default ooc
 # char-creation command. This can be seen as how big of a 'stable' of characters
 # an account can have (not how many you can puppet at the same time). Set to
@@ -1063,6 +1073,13 @@ STATICFILES_IGNORE_PATTERNS = ["README.md"]
 # directory names shown in the templates directory.
 WEBSITE_TEMPLATE = "website"
 WEBCLIENT_TEMPLATE = "webclient"
+# Whether the webclient "is typing" notification feature is active at all. Set
+# to False to disable it completely (server stops responding to typing events
+# and the client stays dormant, sending no per-keystroke traffic).
+WEBCLIENT_TYPING_ENABLED = True
+# Number of seconds for the "typing" notification to timeout.
+WEBCLIENT_TYPING_TIMEOUT = 5
+WEBCLIENT_TYPING_AUDIENCE_GETTER = "evennia.server.is_typing.is_typing_get_audience_common_location"
 # We setup the location of the website template as well as the admin site.
 TEMPLATES = [
     {
